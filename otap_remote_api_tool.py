@@ -40,9 +40,14 @@ except ModuleNotFoundError:
 
 args = None
 connection = None
+client = None
+req_fragments = None
+keys = None
 
 
 class Request(Enum):
+    """Request types"""
+
     NONE = 0
     PING = 1
     CANCEL = 2
@@ -53,6 +58,26 @@ class Request(Enum):
     CLEAR_BITS_SET_LOCK = 7
     UPDATE_SCRATCHPAD = 8
     RESET_NODE = 9
+    AGENT = 10
+
+
+class DummyAgent:
+    """A dummy agent class for when no agent given"""
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    def periodic(self):
+        pass
+
+    def on_message(self, recv_packet):
+        pass
+
+    def generate_remote_api_request(self, gw_id, sink_id, dest_address):
+        pass
+
+
+agent = DummyAgent()
 
 
 def print_msg(msg):
@@ -238,6 +263,47 @@ def read_node_list(file_):
     return nodes
 
 
+def init_remote_api_fragments():
+    """Create Remote API Request fragments and keys"""
+
+    global req_fragments, keys
+
+    no_key = "FF " * 16
+    key = no_key
+    new_key = no_key  # Default new key is "no key" if not set
+
+    if args.feature_lock_key is not None:
+        key = connection.remote_api[args.feature_lock_key].feature_lock_key
+        if key is None:
+            # Empty key is interpreted as "no key"
+            key = no_key
+    if args.new_feature_lock_key is not None:
+        new_key = connection.remote_api[args.new_feature_lock_key].feature_lock_key
+        if new_key is None:
+            # Empty key is interpreted as "no key"
+            new_key = no_key
+
+    if args.feature_lock_key is not None:
+        # Begin with Lock
+        begin = "02 10" + key
+    else:
+        # Begin
+        begin = "01 00"
+
+    end_and_update = (
+        "03 00"
+        + "05 02"
+        + ("%02X" % (args.update_delay & 0xFF))
+        + ("%02X" % (args.update_delay >> 8))
+    )
+
+    # Remote API Request fragments
+    req_fragments = {"begin": begin, "end_and_update": end_and_update}
+
+    # Feature Lock Keys
+    keys = {"no_key": no_key, "key": key, "new_key": new_key}
+
+
 def parse_arguments():
     """Parse command line arguments"""
 
@@ -388,8 +454,15 @@ def parse_arguments():
 
         print_msg("not sending requests, no nodes selected")
 
+    init_remote_api_fragments()
+
     try:
-        args.request = Request[args.request.upper()]
+        if not args.request.upper().startswith("AGENT:"):
+            args.request = Request[args.request.upper()]
+            agent_name = None
+        else:
+            _, agent_name = args.request.split(":", 1)
+            args.request = Request["AGENT"]
     except KeyError:
         parser.error("invalid --request: %s" % args.request)
 
@@ -420,6 +493,39 @@ def parse_arguments():
     # DEBUG: Show parsed command line arguments
     if False:
         print_msg(repr(args))
+
+    if agent_name is not None:
+        # Import agent class
+        global agent
+
+        if ":" in agent_name:
+            agent_name, agent_param = agent_name.split(":", 1)
+        else:
+            agent_param = ""
+
+        agent_class = __import__(f"agent_{agent_name}", fromlist="Agent")
+
+        # Functions available to the agent
+        agent_functions = {
+            "send_remote_api_request": send_remote_api_request,
+            "print_msg": print_msg,
+            "print_info": print_info,
+            "print_verbose": print_verbose,
+        }
+
+        # Create agent
+        try:
+            agent = agent_class.Agent(
+                agent_param,
+                agent_functions,
+                connection,
+                args.repeat_delay,
+                args.node_list,
+                req_fragments,
+                keys,
+            )
+        except (ValueError, FileNotFoundError) as exc:
+            parser.error(f"(agent) {exc}")
 
 
 def on_connect(client, userdata, flags, rc):
@@ -625,89 +731,20 @@ def on_message(client, userdata, mqtt_msg):
                     recv_packet.destination_endpoint,
                 )
             )
+
+        # Tell agent that a data packet was received
+        agent.on_message(recv_packet)
     else:
         # Something else, print it as is
         print_verbose("message on topic %s: '%s'" % (mqtt_msg.topic, mqtt_msg.payload))
 
 
-def send_remote_api_request(client, gw_id, sink_id, dest_address=None):
+def send_remote_api_request(payload, gw_id, sink_id, dest_address=None):
     """Remote API request send function"""
 
-    no_key = "FF " * 16
-    key = no_key
-    new_key = no_key  # Default new key is "no key" if not set
-
-    if args.feature_lock_key is not None:
-        key = connection.remote_api[args.feature_lock_key].feature_lock_key
-        if key is None:
-            # Empty key is interpreted as "no key"
-            key = no_key
-    if args.new_feature_lock_key is not None:
-        new_key = connection.remote_api[args.new_feature_lock_key].feature_lock_key
-        if new_key is None:
-            # Empty key is interpreted as "no key"
-            new_key = no_key
-
-    if args.feature_lock_key is not None:
-        # Begin with Lock
-        begin = "02 10" + key
-    else:
-        # Begin
-        begin = "01 00"
-
-    end_and_update = (
-        "03 00"
-        + "05 02"
-        + ("%02X" % (args.update_delay & 0xFF))
-        + ("%02X" % (args.update_delay >> 8))
-    )
-
     if dest_address == None:
-        dest_address = 0xFFFFFFFF  # Broadcast
-
-    if args.request == Request.NONE:
-        # Do nothing
-        return
-    elif args.request == Request.PING:
-        # Empty Remote API Ping request
-        payload = "00 00"
-    elif args.request == Request.CANCEL:
-        # Cancel request
-        payload = "04 00"
-    elif args.request == Request.REQUEST_INFO:
-        # Read Scratchpad Status + read node role + read Feature Lock Bits, Key
-        payload = "19 00" + "0E 02 04 00" + "0E 02 16 00" + "0E 02 17 00"
-    elif args.request == Request.CLEAR_BITS:
-        # Clear Feature Lock Bits to all 1's
-        payload = begin + "0D 06 16 00 FF FF FF FF" + end_and_update
-    elif args.request == Request.CLEAR_BITS_CLEAR_LOCK:
-        # Clear Feature Lock Bits to all 1's and clear the Feature Lock Key
-        payload = (
-            begin + "0D 06 16 00 FF FF FF FF" + "0D 12 17 00" + no_key + end_and_update
-        )
-    elif args.request == Request.SET_BITS_SET_LOCK:
-        # Set Feature Lock Bits and set the Feature Lock Key
-        payload = (
-            begin + "0D 06 16 00 FF FF FF 7F" + "0D 12 17 00" + new_key + end_and_update
-        )
-    elif args.request == Request.CLEAR_BITS_SET_LOCK:
-        # Clear Feature Lock Bits and set the Feature Lock Key
-        payload = (
-            begin + "0D 06 16 00 FF FF FF FF" + "0D 12 17 00" + new_key + end_and_update
-        )
-    elif args.request == Request.UPDATE_SCRATCHPAD:
-        # Process scratchpad after a short delay
-        payload = begin + "1A 01" + ("%02X" % args.sequence) + end_and_update
-    elif args.request == Request.RESET_NODE:
-        # Reset node by setting cNodeRole to the value
-        # it already has, by using a mask of 0x00
-        payload = begin + "0D 04 04 00 82 00" + end_and_update
-    else:
-        # Invalid request
-        return
-
-    if dest_address == 0xFFFFFFFF:
         target_name = " broadcast"
+        dest_address = 0xFFFFFFFF  # Broadcast
     else:
         target_name = " to node %d" % dest_address
 
@@ -724,7 +761,7 @@ def send_remote_api_request(client, gw_id, sink_id, dest_address=None):
     # Fill out the message fields. WirepasMessage()
     # and SendPacketReq() are created automatically
     sp_req = proto_msg.wirepas.send_packet_req
-    sp_req.header.req_id = random.randint(0, 2 ** 48)  # At least 48 bits of randomness
+    sp_req.header.req_id = random.randint(0, 2**48)  # At least 48 bits of randomness
     sp_req.header.sink_id = sink_id
     sp_req.destination_address = dest_address
     sp_req.source_endpoint = 255  # Wirepas reserved
@@ -739,8 +776,88 @@ def send_remote_api_request(client, gw_id, sink_id, dest_address=None):
     client.publish("gw-request/send_data/%s/%s" % (gw_id, sink_id), payload)
 
 
+def send_request(gw_id, sink_id, dest_address):
+    """Generate and send a Remote API request"""
+
+    if args.request == Request.NONE:
+        # Do nothing
+        return
+    elif args.request == Request.PING:
+        # Empty Remote API Ping request
+        payload = "00 00"
+    elif args.request == Request.CANCEL:
+        # Cancel request
+        payload = "04 00"
+    elif args.request == Request.REQUEST_INFO:
+        # Read Scratchpad Status + read node role + read Feature Lock Bits, Key
+        payload = "19 00" + "0E 02 04 00" + "0E 02 16 00" + "0E 02 17 00"
+    elif args.request == Request.CLEAR_BITS:
+        # Clear Feature Lock Bits to all 1's
+        payload = (
+            req_fragments["begin"]
+            + "0D 06 16 00 FF FF FF FF"
+            + req_fragments["end_and_update"]
+        )
+    elif args.request == Request.CLEAR_BITS_CLEAR_LOCK:
+        # Clear Feature Lock Bits to all 1's and clear the Feature Lock Key
+        payload = (
+            req_fragments["begin"]
+            + "0D 06 16 00 FF FF FF FF"
+            + "0D 12 17 00"
+            + keys["no_key"]
+            + req_fragments["end_and_update"]
+        )
+    elif args.request == Request.SET_BITS_SET_LOCK:
+        # Set Feature Lock Bits and set the Feature Lock Key
+        payload = (
+            req_fragments["begin"]
+            + "0D 06 16 00 FF FF FF 7F"
+            + "0D 12 17 00"
+            + keys["new_key"]
+            + req_fragments["end_and_update"]
+        )
+    elif args.request == Request.CLEAR_BITS_SET_LOCK:
+        # Clear Feature Lock Bits and set the Feature Lock Key
+        payload = (
+            req_fragments["begin"]
+            + "0D 06 16 00 FF FF FF FF"
+            + "0D 12 17 00"
+            + keys["new_key"]
+            + req_fragments["end_and_update"]
+        )
+    elif args.request == Request.UPDATE_SCRATCHPAD:
+        # Process scratchpad after a short delay
+        payload = (
+            req_fragments["begin"]
+            + "1A 01"
+            + ("%02X" % args.sequence)
+            + req_fragments["end_and_update"]
+        )
+    elif args.request == Request.RESET_NODE:
+        # Reset node by setting cNodeRole to the value
+        # it already has, by using a mask of 0x00
+        payload = (
+            req_fragments["begin"]
+            + "0D 04 04 00 82 00"
+            + req_fragments["end_and_update"]
+        )
+    elif args.request == Request.AGENT:
+        # Tell agent that it is time send a Remote API request
+        payload = agent.generate_remote_api_request(gw_id, sink_id, dest_address)
+        if not payload:
+            # Nothing to do
+            return
+    else:
+        # Invalid request
+        return
+
+    send_remote_api_request(payload, gw_id, sink_id, dest_address)
+
+
 def main():
     """Main program"""
+
+    global client
 
     parse_arguments()
 
@@ -780,6 +897,9 @@ def main():
         # manual interface
         client.loop(timeout=1.0)
 
+        # Call periodic handler function of agent
+        agent.periodic()
+
         # Send a Remote API request message periodically
         now = time.time()
         if (first_req or args.repeat_delay > 0) and (
@@ -796,9 +916,7 @@ def main():
             for gw_id in connection.gateways:
                 for sink_id in connection.gateways[gw_id].sinks:
                     for node_addr in nodes:
-                        send_remote_api_request(
-                            client, gw_id, sink_id, dest_address=node_addr
-                        )
+                        send_request(gw_id, sink_id, dest_address=node_addr)
 
             last_message_time = now
 

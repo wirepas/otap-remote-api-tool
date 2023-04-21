@@ -42,7 +42,7 @@ if True:
     gws = wni.get_gateways()
     print(repr(gws))
 
-    if False: # DEBUG
+    if False:  # DEBUG
         sys.exit(0)
 else:
     # Gateways:
