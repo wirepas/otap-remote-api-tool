@@ -113,7 +113,7 @@ def convert():
             # Iterate through nodes
             num_nodes = 0
             for node in db.iterator():
-                text_file.write(f"{node[0]}\n")
+                text_file.write(f"{node['node_addr']}\n")
                 num_nodes += 1
 
             # Print summary

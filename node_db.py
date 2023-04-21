@@ -119,15 +119,13 @@ class _NodeIterator:
 
     def __iter__(self):
         self.cursor = self.conn.cursor()
-        self.res = self.cursor.execute("SELECT node_addr FROM nodes ORDER BY node_addr")
+        self.res = self.cursor.execute("SELECT * FROM nodes ORDER BY node_addr")
         return self
 
     def __next__(self):
         row = self.res.fetchone()
         if not row:
             raise StopIteration
-        row["phase"] = Phase(row["phase"])
-        row["lock_status"] = OtapLockStatus(row["lock_status"])
         return row
 
 

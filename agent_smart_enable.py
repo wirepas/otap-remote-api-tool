@@ -164,7 +164,7 @@ class Agent:
             return phase, updates
 
         if phase == node_db.Phase.INFO_REQ:
-            # Remote API info response received, parse
+            # Remote API response packet received, parse
             # it to see if it is the info response
             info = self._parse_info_resp(node_info, recv_packet)
             if not info:
@@ -175,6 +175,15 @@ class Agent:
 
             # Check stored sequence number and lock / unlock
             lock = info["st_seq"] not in self.allowed_seqs
+
+            if lock and (info["lock_status"] == node_db.OtapLockStatus.LOCKED):
+                self.print_info(f"node {source_address} already locked, nothing to do")
+                return node_db.Phase.DONE, updates
+            elif not lock and (info["lock_status"] == node_db.OtapLockStatus.UNLOCKED):
+                self.print_info(
+                    f"node {source_address} already unlocked, nothing to do"
+                )
+                return node_db.Phase.DONE, updates
 
             self.print_info(
                 f"got info response from {source_address}, sending {lock and 'lock' or 'unlock'} request"
