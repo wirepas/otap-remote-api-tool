@@ -417,8 +417,7 @@ def parse_arguments():
     args = parser.parse_args()
 
     if not args.verbose:
-        # DEBUG: Always use verbosity of at least 1
-        args.verbose = 1  # DEBUG: 0
+        args.verbose = 0
 
     if args.node_list and args.broadcast:
         parser.error("cannot use both --node_list and --broadcast")
@@ -680,8 +679,8 @@ def on_message(client, userdata, mqtt_msg):
                 % (recv_packet.source_address, recv_packet.travel_time_ms / 1000.0)
             )
 
-            # DEBUG: Always show hex dump of received packet
-            print_info(hexdump(recv_packet.payload))  # DEBUG: print_verbose()
+            # Show hex dump of received packet
+            print_verbose(hexdump(recv_packet.payload))
 
             parse_remote_api(recv_packet.source_address, recv_packet.payload)
         elif (
@@ -752,8 +751,8 @@ def send_remote_api_request(payload, gw_id, sink_id, dest_address=None):
 
     payload = binascii.unhexlify(payload.replace(" ", ""))
 
-    # DEBUG: Always show hex dump of sent packet
-    print_info(hexdump(payload))  # DEBUG: print_verbose()
+    # Show hex dump of sent packet
+    print_verbose(hexdump(payload))
 
     # Create an empty GenericMessage()
     proto_msg = generic_message.GenericMessage()

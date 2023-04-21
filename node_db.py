@@ -6,17 +6,6 @@ from enum import Enum
 import sqlite3
 
 
-example = """
-status from 208625368,
-st_len: 203584, st_crc: 0xA919, st_seq: 6, st_type: 0x01, st_sta: 0xFF,
-fw_len: 16, fw_crc: 0xFFFF, fw_seq: 255, fw_id: 0x00000103, fw_ver: 5.2.0.53,
-app_len: 16, app_crc: 0xFFFF, app_seq: 255, app_id: 0x83744C03, app_ver: 2.0.0.0
-node 208625368 role headnode+ll+ar (0x92)
-otap lock bit not set on 208625368
-feature lock key not set on 208625368
-"""
-
-
 # Node information table definition
 CREATE_QUERY = """
 CREATE TABLE IF NOT EXISTS nodes(
@@ -27,6 +16,7 @@ CREATE TABLE IF NOT EXISTS nodes(
     lock_status INT,
     last_req INT,
     last_resp INT,
+    last_info INT,
     st_len INT,
     st_crc INT,
     st_seq INT,
@@ -46,6 +36,7 @@ INSERT INTO nodes (
     lock_status,
     last_req,
     last_resp,
+    last_info,
     st_len,
     st_crc,
     st_seq,
@@ -60,6 +51,7 @@ INSERT INTO nodes (
     :lock_status,
     :last_req,
     :last_resp,
+    :last_info,
     :st_len,
     :st_crc,
     :st_seq,
@@ -75,6 +67,7 @@ ON CONFLICT(node_addr) DO UPDATE SET
     lock_status = coalesce(:lock_status, lock_status),
     last_req = coalesce(:last_req, last_req),
     last_resp = coalesce(:last_resp, last_resp),
+    last_info = coalesce(:last_info, last_info),
     st_len = coalesce(:st_len, st_len),
     st_crc = coalesce(:st_crc, st_crc),
     st_seq = coalesce(:st_seq, st_seq),
@@ -83,20 +76,31 @@ ON CONFLICT(node_addr) DO UPDATE SET
     st_blob = coalesce(:st_blob, st_blob)
 """
 
-# Delete node from information table
+# Delete node from node information table
 DELETE_QUERY = """
 DELETE FROM nodes WHERE node_addr = :node_addr
 """
 
+# Find a specific node in node information table
 FIND_QUERY = """
 SELECT * FROM nodes WHERE node_addr = :node_addr
+"""
+
+# Iterate over all nodes in node information table
+ITER_QUERY = """
+"SELECT * FROM nodes ORDER BY node_addr"
+"""
+
+# Count number of nodes in node information table
+COUNT_QUERY = """
+"SELECT COUNT(*) AS count FROM nodes"
 """
 
 
 class Phase(Enum):
     """Node phase values"""
 
-    NONE = 0
+    INIT = 0
     INFO_REQ = 1
     LOCK_UNLOCK_REQ = 2
     DONE = 3
@@ -112,14 +116,14 @@ class OtapLockStatus(Enum):
 
 
 class _NodeIterator:
-    """Iterator for node rows"""
+    """Iterator for node information"""
 
     def __init__(self, conn):
         self.conn = conn
 
     def __iter__(self):
         self.cursor = self.conn.cursor()
-        self.res = self.cursor.execute("SELECT * FROM nodes ORDER BY node_addr")
+        self.res = self.cursor.execute(ITER_QUERY)
         return self
 
     def __next__(self):
@@ -145,7 +149,7 @@ class NodeDb:
 
     def get_number_of_nodes(self):
         cursor = self.conn.cursor()
-        res = cursor.execute("SELECT COUNT(*) AS count FROM nodes")
+        res = cursor.execute(COUNT_QUERY)
         return (res.fetchone() or {"count": 0})[
             "count"
         ]  # Just in case None is returned
@@ -175,6 +179,7 @@ class NodeDb:
         lock_status=None,
         last_req=None,
         last_resp=None,
+        last_info=None,
         st_len=None,
         st_crc=None,
         st_seq=None,
@@ -200,6 +205,7 @@ class NodeDb:
             "lock_status": lock_status,
             "last_req": last_req,
             "last_resp": last_resp,
+            "last_info": last_info,
             "st_len": st_len,
             "st_crc": st_crc,
             "st_seq": st_seq,

@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
 
+# agent_smart_enable.py - An intelligent agent to handle sending Remote API
+#                         requests and parsing responses, to enable OTAP on
+#                         large networks in a controlled manner
+
 import time
 import struct
 from enum import Enum
@@ -33,6 +37,11 @@ class RemoteApiResponse(Enum):
 
 
 class Agent:
+    """An intelligent agent to handle Remote API requests and responses"""
+
+    # Interval to re-request node information
+    INFO_REQUEST_INTERVAL = 5 * 60  # Five minutes
+
     def __init__(
         self, param, functions, connection, repeat_delay, node_list, req_fragments, keys
     ):
@@ -83,34 +92,56 @@ class Agent:
         source_address = recv_packet.source_address
 
         rx_time = recv_packet.rx_time_ms_epoch / 1000.0
-        last_seen = None
-        phase = node_db.Phase.NONE
+        last_seen = rx_time  # Update timestamp, unless newer packets already seen
+        phase = node_db.Phase.INIT
         last_req = None
+        seq_old = None
 
         # See if the node is known already
         node_info = self.db.find_node(source_address)
         if node_info:
-            last_seen = node_info["last_seen"]
-            if last_seen and last_seen < rx_time:
-                # Newer packet from node
-                last_seen = rx_time
+            seq_old = node_info["st_seq"]
+            last_seen_old = node_info["last_seen"]
 
-            # Get current phase, default to "NONE"
+            if last_seen_old is not None and last_seen_old >= last_seen:
+                # Newer packets have already been seen, do not touch timestamp
+                last_seen = None
+
+            # Get current phase, default to "INIT"
             if node_info["phase"]:
                 phase = node_db.Phase(node_info["phase"])
+
+            now = time.time()
 
             # Handle request timeouts
             if self.request_timeout:
                 last_req = node_info["last_req"]
                 if phase != node_db.Phase.DONE and (
-                    not last_req or (time.time() - last_req) >= self.request_timeout
+                    last_req is None or (now - last_req) >= self.request_timeout
                 ):
-                    phase = node_db.Phase.NONE
+                    phase = node_db.Phase.INIT
+                    self.print_info(f"node {source_address} request timeout")
+
+            # Request info periodically
+            last_info = node_info["last_req"]
+            if (
+                last_info is not None
+                and (now - last_info) >= self.INFO_REQUEST_INTERVAL
+            ):
+                phase = node_db.Phase.INIT
+                self.print_info(f"node {source_address} periodic info request")
         else:
-            self.print_info(f"new node seen: {source_address}")
+            self.print_info(f"new node {source_address} seen")
 
         # Run state machine
         phase, updates = self._state_machine(phase, node_info, recv_packet)
+
+        seq = updates.get("st_seq", None)
+        if seq_old is not None and seq is not None:
+            if seq_old != seq:
+                self.print_msg(
+                    f"otap seq number changed from {seq_old} to {seq} on node {source_address}"
+                )
 
         # Update node information
         self.db.open_transaction()
@@ -122,6 +153,7 @@ class Agent:
             lock_status=updates.get("lock_status", None),
             last_req=updates.get("last_req", None),
             last_resp=updates.get("last_resp", None),
+            last_info=updates.get("last_info", None),
             st_len=updates.get("st_len", None),
             st_crc=updates.get("st_crc", None),
             st_seq=updates.get("st_seq", None),
@@ -149,7 +181,7 @@ class Agent:
         dest_endpoint = recv_packet.destination_endpoint
         rx_time = recv_packet.rx_time_ms_epoch / 1000.0
 
-        if phase == node_db.Phase.NONE:
+        if phase == node_db.Phase.INIT:
             self.print_info(f"sending info request to {source_address}")
 
             # New node, send info request
@@ -171,6 +203,7 @@ class Agent:
                 return phase, updates
 
             updates["last_resp"] = rx_time
+            updates["last_info"] = rx_time
             updates.update(info)
 
             # Check stored sequence number and lock / unlock
