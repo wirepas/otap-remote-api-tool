@@ -530,7 +530,7 @@ def parse_arguments():
 def on_connect(client, userdata, flags, rc):
     """Connection callback"""
 
-    print_info("connected with result code %s flags: %s" % (rc, flags))
+    print_info("connected with result code %s, flags: %s" % (rc, flags))
 
     # Subscribe to topic "gw-event/received_data/#" to receive data packets.
     # The MQTT topics are documented in WP-RM-123 – WNT Gateway to Backend

@@ -95,14 +95,16 @@ class Agent:
         last_seen = rx_time  # Update timestamp, unless newer packets already seen
         phase = node_db.Phase.INIT
         last_req = None
+        last_info = None
         seq_old = None
 
         # See if the node is known already
         node_info = self.db.find_node(source_address)
         if node_info:
+            last_info = node_info["last_info"]
             seq_old = node_info["st_seq"]
-            last_seen_old = node_info["last_seen"]
 
+            last_seen_old = node_info["last_seen"]
             if last_seen_old is not None and last_seen_old >= last_seen:
                 # Newer packets have already been seen, do not touch timestamp
                 last_seen = None
@@ -144,8 +146,8 @@ class Agent:
                     f"otap seq number changed from {seq_old} to {seq} on node {source_address}"
                 )
 
-        last_info = updates.get("last_info", None)
-        if last_info is None or last_info > node_info["last_info"]:
+        last_info_new = updates.get("last_info", None)
+        if last_info is None or last_info_new is None or last_info_new > last_info:
             # Update node information, if it is newer
             self.db.open_transaction()
             self.db.add_or_update_node(
@@ -392,7 +394,7 @@ class Agent:
             )
             return False
 
-        # Valid unlock response
+        # Valid lock / unlock response
         return True
 
 
