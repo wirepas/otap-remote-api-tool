@@ -74,8 +74,8 @@ class DummyAgent:
     def on_message(self, recv_packet):
         pass
 
-    def generate_remote_api_request(self, gw_id, sink_id, dest_address):
-        pass
+    def generate_remote_api_request(self, gw_id, sink_id, node_addr):
+        return None
 
 
 agent = DummyAgent()

@@ -39,6 +39,9 @@ class RemoteApiResponse(Enum):
 class Agent:
     """An intelligent agent to handle Remote API requests and responses"""
 
+    # Interval for sending periodic requests, seconds
+    PERIODIC_INTERVAL = 20  # 20 seconds
+
     # Request timeout, seconds
     REQUEST_TIMEOUT = 5 * 60  # Five minutes
 
@@ -72,6 +75,7 @@ class Agent:
 
         self.allowed_seqs = _read_allowed_seqs(params[1])
         self.request_repeat_interval = repeat_delay
+        self.last_periodic_ts = time.time()  # Starts after one periodic interval
 
     def periodic(self):
         """Periodic handler function, called every second or so"""
@@ -79,7 +83,38 @@ class Agent:
         if False:  # DEBUG
             self.print_msg("agent: periodic()")
 
-        # TODO: Periodic maintenance functions
+        # Check if it is time to carry out periodic tasks
+        now = time.time()
+        if now - self.last_periodic_ts < self.PERIODIC_INTERVAL:
+            # Not yet
+            return
+        self.last_periodic_ts = now
+
+        # Find a node the oldest request time or missing info
+        timeout = self.request_repeat_interval * 3 // 2  # 50% extra time
+        node_addr = self.db.find_node_oldest_req(now, timeout)
+        if node_addr is None:
+            # No nodes found
+            return
+
+        self.print_info(f"node {node_addr} periodic request (all gateways and sinks)")
+
+        # Create an info update request
+        req_ts, payload = self._generate_info_req()
+
+        # Send to all gateways and all sinks
+        for gw_id in self.connection.gateways:
+            for sink_id in self.connection.gateways[gw_id].sinks:
+                self.send_remote_api_request(payload, gw_id, sink_id, node_addr)
+
+        # Update node information with request timestamp and phase
+        self.db.open_transaction()
+        self.db.add_or_update_node(
+            node_addr,
+            phase=node_db.Phase.INFO_REQ,
+            last_req=req_ts,
+        )
+        self.db.commit()
 
     def on_message(self, recv_packet):
         """Message reception handler function, called on every received packet"""
@@ -89,7 +124,7 @@ class Agent:
             self.print_msg("agent: on_message()")
             self.print_msg(repr(recv_packet))
 
-        source_address = recv_packet.source_address
+        node_addr = recv_packet.source_address
 
         rx_time = recv_packet.rx_time_ms_epoch / 1000.0
         last_seen = rx_time  # Update timestamp, unless newer packets already seen
@@ -99,7 +134,7 @@ class Agent:
         seq_old = None
 
         # See if the node is known already
-        node_info = self.db.find_node(source_address)
+        node_info = self.db.find_node(node_addr)
         if node_info:
             last_info = node_info["last_info"]
             seq_old = node_info["st_seq"]
@@ -121,7 +156,7 @@ class Agent:
                 last_req is None or (now - last_req) >= self.REQUEST_TIMEOUT
             ):
                 phase = node_db.Phase.INIT
-                self.print_info(f"node {source_address} request timeout")
+                self.print_info(f"node {node_addr} request timeout")
 
             if self.request_repeat_interval:
                 # Request info periodically
@@ -132,9 +167,9 @@ class Agent:
                     and (now - last_info) >= self.request_repeat_interval
                 ):
                     phase = node_db.Phase.INIT
-                    self.print_info(f"node {source_address} periodic request")
+                    self.print_info(f"node {node_addr} periodic request")
         else:
-            self.print_info(f"new node {source_address} seen")
+            self.print_info(f"new node {node_addr} seen")
 
         # Run state machine
         phase, updates = self._state_machine(phase, node_info, recv_packet)
@@ -143,7 +178,7 @@ class Agent:
         if seq_old is not None and seq is not None:
             if seq_old != seq:
                 self.print_msg(
-                    f"otap seq number changed from {seq_old} to {seq} on node {source_address}"
+                    f"otap seq number changed from {seq_old} to {seq} on node {node_addr}"
                 )
 
         last_info_new = updates.get("last_info", None)
@@ -151,7 +186,7 @@ class Agent:
             # Update node information, if it is newer
             self.db.open_transaction()
             self.db.add_or_update_node(
-                recv_packet.source_address,
+                node_addr,
                 last_seen=last_seen,
                 phase=phase,
                 node_role=updates.get("node_role", None),
@@ -168,26 +203,27 @@ class Agent:
             )
             self.db.commit()
 
-    def generate_remote_api_request(self, gw_id, sink_id, dest_address):
+    def generate_remote_api_request(self, gw_id, sink_id, node_addr):
         """Send handler function, called when it is time to send a request"""
 
         if False:  # DEBUG
             self.print_msg("agent: send_remote_api_request()")
 
-        # TODO: Send Remote API requests from node list
+        # TODO: Return Remote API Request payload for the given node
+        return None
 
     def _state_machine(self, phase, node_info, recv_packet):
         """State machine for locking / unlocking nodes"""
 
         updates = {}
 
-        source_address = recv_packet.source_address
+        node_addr = recv_packet.source_address
         source_endpoint = recv_packet.source_endpoint
         dest_endpoint = recv_packet.destination_endpoint
         rx_time = recv_packet.rx_time_ms_epoch / 1000.0
 
         if phase == node_db.Phase.INIT:
-            self.print_info(f"sending info request to {source_address}")
+            self.print_info(f"sending info request to {node_addr}")
 
             # New node, send info request
             last_req = self._send_info_req(recv_packet)
@@ -215,16 +251,14 @@ class Agent:
             lock = info["st_seq"] not in self.allowed_seqs
 
             if lock and (info["lock_status"] == node_db.OtapLockStatus.LOCKED):
-                self.print_info(f"node {source_address} already locked, nothing to do")
+                self.print_info(f"node {node_addr} already locked, nothing to do")
                 return node_db.Phase.DONE, updates
             elif not lock and (info["lock_status"] == node_db.OtapLockStatus.UNLOCKED):
-                self.print_info(
-                    f"node {source_address} already unlocked, nothing to do"
-                )
+                self.print_info(f"node {node_addr} already unlocked, nothing to do")
                 return node_db.Phase.DONE, updates
 
             self.print_info(
-                f"got info response from {source_address}, sending {lock and 'lock' or 'unlock'} request"
+                f"got info response from {node_addr}, sending {lock and 'lock' or 'unlock'} request"
             )
 
             # Info response OK, send lock or unlock request
@@ -238,7 +272,7 @@ class Agent:
             # Lock / unlock response received
             if self._parse_lock_unlock_resp(node_info, recv_packet):
                 self.print_info(
-                    f"got lock / unlock response from {source_address}, configuration done"
+                    f"got lock / unlock response from {node_addr}, configuration done"
                 )
                 updates["last_resp"] = rx_time
                 return node_db.Phase.DONE, updates
@@ -279,17 +313,12 @@ class Agent:
         # Request timestamp is OK
         return resp
 
-    def _send_info_req(self, recv_packet):
-        gw_id = recv_packet.header.gw_id
-        sink_id = recv_packet.header.sink_id
-
-        source_address = recv_packet.source_address
-
+    def _generate_info_req(self):
         req_ts = int(time.time())
 
         # Ping with timestamp + read Scratchpad Status + read node role +
         # read Feature Lock Bits + read Feature Lock Key
-        payload = (
+        return req_ts, (
             "00 04"
             + _timestamp_as_hex(req_ts)
             + "19 00"
@@ -298,7 +327,12 @@ class Agent:
             + "0E 02 17 00"
         )
 
-        self.send_remote_api_request(payload, gw_id, sink_id, source_address)
+    def _send_info_req(self, recv_packet):
+        gw_id = recv_packet.header.gw_id
+        sink_id = recv_packet.header.sink_id
+        node_addr = recv_packet.source_address
+        req_ts, payload = self._generate_info_req()
+        self.send_remote_api_request(payload, gw_id, sink_id, node_addr)
         return req_ts
 
     def _parse_info_resp(self, node_info, recv_packet):
@@ -354,7 +388,7 @@ class Agent:
         gw_id = recv_packet.header.gw_id
         sink_id = recv_packet.header.sink_id
 
-        source_address = recv_packet.source_address
+        node_addr = recv_packet.source_address
 
         req_ts = int(time.time())
 
@@ -369,7 +403,7 @@ class Agent:
             + (lock and self.keys["new_key"] or self.keys["no_key"])
             + self.req_fragments["end_and_update"]
         )
-        self.send_remote_api_request(payload, gw_id, sink_id, source_address)
+        self.send_remote_api_request(payload, gw_id, sink_id, node_addr)
         return req_ts
 
     def _parse_lock_unlock_resp(self, node_info, recv_packet):

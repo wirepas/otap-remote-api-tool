@@ -86,6 +86,16 @@ FIND_QUERY = """
 SELECT * FROM nodes WHERE node_addr = :node_addr
 """
 
+# Find a node with the oldest request time
+FIND_OLDEST_REQ_QUERY = """
+SELECT node_addr FROM nodes WHERE (
+  last_req is NULL OR
+  last_info is NULL OR
+  (:timeout != 0 AND :now - last_req >= :timeout)
+)
+ORDER BY last_req LIMIT 1
+"""
+
 # Iterate over all nodes in node information table
 ITER_QUERY = """
 SELECT * FROM nodes ORDER BY node_addr
@@ -127,8 +137,7 @@ class _NodeIterator:
         self.conn = conn
 
     def __iter__(self):
-        self.cursor = self.conn.cursor()
-        self.res = self.cursor.execute(ITER_QUERY)
+        self.cursor = self.conn.execute(ITER_QUERY)
         return self
 
     def __next__(self):
@@ -147,44 +156,47 @@ class NodeDb:
         self.conn.row_factory = sqlite3.Row
 
         # Create a table of nodes if it doesn't exist already
-        cursor = self.conn.cursor()
-        cursor.execute(CREATE_QUERY)
+        cursor = self.conn.execute(CREATE_QUERY)
 
         self.transaction_cursor = None  # No transaction open, yet
 
     def get_number_of_nodes(self):
-        cursor = self.conn.cursor()
-        res = cursor.execute(COUNT_QUERY)
-        return (res.fetchone() or {"count": 0})[
+        cursor = self.conn.execute(COUNT_QUERY)
+        return (cursor.fetchone() or {"count": 0})[
             "count"
         ]  # Just in case None is returned
 
     def find_node(self, node_addr):
-        cursor = self.conn.cursor()
-        res = cursor.execute(FIND_QUERY, {"node_addr": node_addr})
-        row = res.fetchone()
-        return row
+        cursor = self.conn.execute(FIND_QUERY, {"node_addr": node_addr})
+        return cursor.fetchone()
+
+    def find_node_oldest_req(self, now=0, timeout=0):
+        # Timeout may be zero or omitted, in which case only
+        # nodes with no info are considered
+        cursor = self.conn.execute(
+            FIND_OLDEST_REQ_QUERY, {"now": now, "timeout": timeout}
+        )
+        row = cursor.fetchone()
+        if row is None:
+            return None
+        return row["node_addr"]
 
     def seq_info(self):
-        cursor = self.conn.cursor()
-        res = cursor.execute(SEQ_INFO_QUERY)
+        cursor = self.conn.execute(SEQ_INFO_QUERY)
         seqs = {}
-        while True:
-            row = res.fetchone()
-            if not row:
-                break
+        for row in cursor:
             seqs[row["st_seq"]] = row["count"]
         return seqs
 
     def iterator(self):
-        return _NodeIterator(self.conn)
+        # return _NodeIterator(self.conn)
+        return self.conn.execute(ITER_QUERY)
 
     def open_transaction(self):
         if self.transaction_cursor:
             raise ValueError("transaction already open")
 
-        self.transaction_cursor = self.conn.cursor()
-        self.transaction_cursor.execute("BEGIN TRANSACTION")
+        self.transaction_cursor = self.conn.execute("BEGIN TRANSACTION")
 
     def add_or_update_node(
         self,
