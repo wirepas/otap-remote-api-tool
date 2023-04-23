@@ -130,10 +130,11 @@ def convert():
             info = db.seq_info()
             seqs = list(info.items())
             seqs.sort(key=lambda i: i[1], reverse=True)
-            sys.stdout.write("seq  count\n")
+            sys.stdout.write(f"number of nodes: {db.get_number_of_nodes()}\n")
+            sys.stdout.write("seq\tcount\n")
             for seq in seqs:
                 seq_name = (seq[0] is not None) and f"{seq[0]:3d}" or "???"
-                sys.stdout.write(f"{seq_name}  {seq[1]}\n")
+                sys.stdout.write(f"{seq_name}\t{seq[1]}\n")
         else:
             # Convert text to node database
             if args.text_file:
