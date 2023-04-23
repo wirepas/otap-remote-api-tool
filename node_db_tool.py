@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 
-# node_db_converter.py - A tool to convert node addresses between
-#                        a node database and a text file
+# node_db_tool.py - A tool to work with node information database files
 #
 # v0.10 2023-04-20
 # Initial version
@@ -39,8 +38,7 @@ def parse_arguments():
     global args
 
     parser = argparse.ArgumentParser(
-        description="A tool to convert node addresses "
-        "between a node database and a text file",
+        description="A tool to work with node information database files",
         epilog="",
     )
 
@@ -78,12 +76,22 @@ def parse_arguments():
         help="convert a node database back to text",
     )
 
+    parser.add_argument(
+        "-s",
+        "--seq_info",
+        action="store_true",
+        help="statistics about otap sequence numbers",
+    )
+
     parser.add_argument("-v", "--verbose", action="store_true", help="verbose output")
 
     args = parser.parse_args()
 
-    if int(args.add) + int(args.delete) + int(args.to_text) != 1:
-        parser.error("must specify one of --add, --delete or --to_text")
+    if int(args.add) + int(args.delete) + int(args.to_text) + int(args.seq_info) != 1:
+        parser.error("must specify one of --add, --delete, --to_text or --seq_info")
+
+    if args.seq_info and args.text_file:
+        parser.error("cannot have --text_file with --seq_info")
 
     # DEBUG: Show parsed command line arguments
     if False:
@@ -118,6 +126,14 @@ def convert():
 
             # Print summary
             print_verbose(f"{num_nodes} node addresses written")
+        elif args.seq_info:
+            info = db.seq_info()
+            seqs = list(info.items())
+            seqs.sort(key=lambda i: i[1], reverse=True)
+            sys.stdout.write("seq  count\n")
+            for seq in seqs:
+                seq_name = (seq[0] is not None) and f"{seq[0]:3d}" or "???"
+                sys.stdout.write(f"{seq_name}  {seq[1]}\n")
         else:
             # Convert text to node database
             if args.text_file:

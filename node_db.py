@@ -93,7 +93,12 @@ SELECT * FROM nodes ORDER BY node_addr
 
 # Count number of nodes in node information table
 COUNT_QUERY = """
-"SELECT COUNT(*) AS count FROM nodes"
+SELECT COUNT(*) AS count FROM nodes
+"""
+
+# Statistics about sequence numbers
+SEQ_INFO_QUERY = """
+SELECT st_seq, COUNT(*) AS count FROM nodes GROUP BY st_seq
 """
 
 
@@ -159,6 +164,17 @@ class NodeDb:
         res = cursor.execute(FIND_QUERY, {"node_addr": node_addr})
         row = res.fetchone()
         return row
+
+    def seq_info(self):
+        cursor = self.conn.cursor()
+        res = cursor.execute(SEQ_INFO_QUERY)
+        seqs = {}
+        while True:
+            row = res.fetchone()
+            if not row:
+                break
+            seqs[row["st_seq"]] = row["count"]
+        return seqs
 
     def iterator(self):
         return _NodeIterator(self.conn)
