@@ -247,7 +247,7 @@ class Agent:
             updates["last_info"] = rx_time
             updates.update(info)
 
-            # Check stored sequence number and lock / unlock
+            # Check stored sequence number and lock / unlock accordingly
             lock = info["st_seq"] not in self.allowed_seqs
 
             if lock and (info["lock_status"] == node_db.OtapLockStatus.LOCKED):
@@ -270,9 +270,15 @@ class Agent:
 
         if phase == node_db.Phase.LOCK_UNLOCK_REQ:
             # Lock / unlock response received
-            if self._parse_lock_unlock_resp(node_info, recv_packet):
+            lock_bits_set = self._parse_lock_unlock_resp(node_info, recv_packet)
+            if lock_bits_set is not None:
                 self.print_info(
                     f"got lock / unlock response from {node_addr}, configuration done"
+                )
+                updates["lock_status"] = (
+                    lock_bits_set
+                    and node_db.OtapLockStatus.LOCKED
+                    or node_db.OtapLockStatus.UNLOCKED
                 )
                 updates["last_resp"] = rx_time
                 return node_db.Phase.DONE, updates
@@ -409,7 +415,7 @@ class Agent:
     def _parse_lock_unlock_resp(self, node_info, recv_packet):
         resp = self._parse_common_resp(node_info, recv_packet, 6)
         if not resp:
-            return False
+            return None
 
         if False:  # DEBUG
             self.print_msg(repr(resp))
@@ -426,10 +432,13 @@ class Agent:
             self.print_verbose(
                 "invalid remote api lock / unlock response packet format"
             )
-            return False
+            return None
+
+        # Check if Feature Lock Bits set
+        lock_bits_set = resp[2]["value"] & 0x80000000 == 0
 
         # Valid lock / unlock response
-        return True
+        return lock_bits_set
 
 
 def _parse_remote_api_response(payload):
