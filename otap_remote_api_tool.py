@@ -40,6 +40,7 @@ except ModuleNotFoundError:
 
 args = None
 connection = None
+reconnect_ts = None
 client = None
 req_fragments = None
 keys = None
@@ -544,7 +545,12 @@ def on_connect(client, userdata, flags, rc):
 def on_disconnect(client, userdata, rc):
     """Disconnection callback"""
 
-    print_info("disconnected with result code %s" % rc)
+    global reconnect_ts
+
+    delay = random.randint(0, 20) + 10
+    reconnect_ts = time.time() + delay
+
+    print_info("disconnected with result code %s, reconnecting in %d" % (rc, delay))
 
 
 def parse_remote_api(source_address, payload):
@@ -857,6 +863,7 @@ def main():
     """Main program"""
 
     global client
+    global reconnect_ts
 
     parse_arguments()
 
@@ -891,7 +898,12 @@ def main():
     index = 0
 
     while True:
-        # Process network traffic dispatch callbacks and handle reconnecting.
+        # Handle reconnecting
+        if reconnect_ts is not None and time.time() > reconnect_ts:
+            reconnect_ts = None
+            client.reconnect()
+
+        # Process network traffic dispatch callbacks
         # Other loop*() functions are available that give a threaded or
         # manual interface
         client.loop(timeout=1.0)

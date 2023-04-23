@@ -110,7 +110,7 @@ class Agent:
                 last_seen = None
 
             # Get current phase, default to "INIT"
-            if node_info["phase"]:
+            if node_info["phase"] is not None:
                 phase = node_db.Phase(node_info["phase"])
 
             now = time.time()
