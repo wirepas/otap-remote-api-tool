@@ -39,8 +39,8 @@ class RemoteApiResponse(Enum):
 class Agent:
     """An intelligent agent to handle Remote API requests and responses"""
 
-    # Interval to re-request node information
-    INFO_REQUEST_INTERVAL = 5 * 60  # Five minutes
+    # Request timeout, seconds
+    REQUEST_TIMEOUT = 5 * 60  # Five minutes
 
     def __init__(
         self, param, functions, connection, repeat_delay, node_list, req_fragments, keys
@@ -71,7 +71,7 @@ class Agent:
         self.db = node_db.NodeDb(params[0])
 
         self.allowed_seqs = _read_allowed_seqs(params[1])
-        self.request_timeout = repeat_delay
+        self.request_repeat_interval = repeat_delay
 
     def periodic(self):
         """Periodic handler function, called every second or so"""
@@ -114,22 +114,23 @@ class Agent:
             now = time.time()
 
             # Handle request timeouts
-            if self.request_timeout:
-                last_req = node_info["last_req"]
-                if phase != node_db.Phase.DONE and (
-                    last_req is None or (now - last_req) >= self.request_timeout
-                ):
-                    phase = node_db.Phase.INIT
-                    self.print_info(f"node {source_address} request timeout")
-
-            # Request info periodically
-            last_info = node_info["last_req"]
-            if (
-                last_info is not None
-                and (now - last_info) >= self.INFO_REQUEST_INTERVAL
+            last_req = node_info["last_req"]
+            if phase != node_db.Phase.DONE and (
+                last_req is None or (now - last_req) >= self.REQUEST_TIMEOUT
             ):
                 phase = node_db.Phase.INIT
-                self.print_info(f"node {source_address} periodic info request")
+                self.print_info(f"node {source_address} request timeout")
+
+            if self.request_repeat_interval:
+                # Request info periodically
+                last_info = node_info["last_info"]
+                if (
+                    phase == node_db.Phase.DONE
+                    and last_info is not None  # Shouldn't happen with Phase.DONE
+                    and (now - last_info) >= self.request_repeat_interval
+                ):
+                    phase = node_db.Phase.INIT
+                    self.print_info(f"node {source_address} periodic request")
         else:
             self.print_info(f"new node {source_address} seen")
 
@@ -143,25 +144,27 @@ class Agent:
                     f"otap seq number changed from {seq_old} to {seq} on node {source_address}"
                 )
 
-        # Update node information
-        self.db.open_transaction()
-        self.db.add_or_update_node(
-            recv_packet.source_address,
-            last_seen=last_seen,
-            phase=phase,
-            node_role=updates.get("node_role", None),
-            lock_status=updates.get("lock_status", None),
-            last_req=updates.get("last_req", None),
-            last_resp=updates.get("last_resp", None),
-            last_info=updates.get("last_info", None),
-            st_len=updates.get("st_len", None),
-            st_crc=updates.get("st_crc", None),
-            st_seq=updates.get("st_seq", None),
-            st_type=updates.get("st_type", None),
-            st_status=updates.get("st_sta", None),
-            st_blob=updates.get("st_blob", None),
-        )
-        self.db.commit()
+        last_info = updates.get("last_info", None)
+        if last_info is None or last_info > node_info["last_info"]:
+            # Update node information, if it is newer
+            self.db.open_transaction()
+            self.db.add_or_update_node(
+                recv_packet.source_address,
+                last_seen=last_seen,
+                phase=phase,
+                node_role=updates.get("node_role", None),
+                lock_status=updates.get("lock_status", None),
+                last_req=updates.get("last_req", None),
+                last_resp=updates.get("last_resp", None),
+                last_info=updates.get("last_info", None),
+                st_len=updates.get("st_len", None),
+                st_crc=updates.get("st_crc", None),
+                st_seq=updates.get("st_seq", None),
+                st_type=updates.get("st_type", None),
+                st_status=updates.get("st_sta", None),
+                st_blob=updates.get("st_blob", None),
+            )
+            self.db.commit()
 
     def generate_remote_api_request(self, gw_id, sink_id, dest_address):
         """Send handler function, called when it is time to send a request"""
