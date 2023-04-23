@@ -88,7 +88,7 @@ SELECT * FROM nodes WHERE node_addr = :node_addr
 
 # Iterate over all nodes in node information table
 ITER_QUERY = """
-"SELECT * FROM nodes ORDER BY node_addr"
+SELECT * FROM nodes ORDER BY node_addr
 """
 
 # Count number of nodes in node information table
