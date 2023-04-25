@@ -40,10 +40,10 @@ class Agent:
     """An intelligent agent to handle Remote API requests and responses"""
 
     # Interval for sending periodic requests, seconds
-    PERIODIC_INTERVAL = 20  # 20 seconds
+    PERIODIC_INTERVAL = 10  # 10 seconds
 
     # Request timeout, seconds
-    REQUEST_TIMEOUT = 5 * 60  # Five minutes
+    REQUEST_TIMEOUT = 3 * 60  # Three minutes
 
     def __init__(
         self, param, functions, connection, repeat_delay, node_list, req_fragments, keys
@@ -125,6 +125,10 @@ class Agent:
             self.print_msg(repr(recv_packet))
 
         node_addr = recv_packet.source_address
+
+        if None not in self.node_list and node_addr not in self.node_list:
+            # Not in node list and not broadcast, leave
+            return
 
         rx_time = recv_packet.rx_time_ms_epoch / 1000.0
         last_seen = rx_time  # Update timestamp, unless newer packets already seen
