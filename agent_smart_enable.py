@@ -266,7 +266,9 @@ class Agent:
             )
 
             # Info response OK, send lock or unlock request
-            last_req = self._send_lock_unlock_req(recv_packet, lock)
+            last_req = self._send_lock_unlock_req(
+                recv_packet, info["lock_status"], lock
+            )
             updates["last_req"] = last_req
 
             # Advance to the next phase and wait for response
@@ -394,7 +396,7 @@ class Agent:
 
         return info
 
-    def _send_lock_unlock_req(self, recv_packet, lock):
+    def _send_lock_unlock_req(self, recv_packet, lock_status, new_lock):
         gw_id = recv_packet.header.gw_id
         sink_id = recv_packet.header.sink_id
 
@@ -402,15 +404,24 @@ class Agent:
 
         req_ts = int(time.time())
 
+        if lock_status in (
+            node_db.OtapLockStatus.LOCKED,
+            node_db.OtapLockStatus.UNLOCKED_KEY_SET,
+        ):
+            begin_req = self.req_fragments["begin"]
+        else:
+            # Feature Lock Key not set, must use plain Begin request
+            begin_req = "01 00"
+
         # Ping with timestamp + Begin + Set Feature Lock Bits +
         # Set Feature Lock Key + End + Update
         payload = (
             "00 04"
             + _timestamp_as_hex(req_ts)
-            + self.req_fragments["begin"]
-            + (lock and "0D 06 16 00 FF FF FF 7F" or "0D 06 16 00 FF FF FF FF")
+            + begin_req
+            + (new_lock and "0D 06 16 00 FF FF FF 7F" or "0D 06 16 00 FF FF FF FF")
             + "0D 12 17 00"
-            + (lock and self.keys["new_key"] or self.keys["no_key"])
+            + (new_lock and self.keys["new_key"] or self.keys["no_key"])
             + self.req_fragments["end_and_update"]
         )
         self.send_remote_api_request(payload, gw_id, sink_id, node_addr)
