@@ -234,8 +234,15 @@ def command_info():
     global connection
     global wni
 
+    num_listed_gws = 0
+    num_found_gws = 0
+    num_listed_sinks = 0
+    num_found_sinks = 0
+
     for gw_id, gw in connection.gateways.items():
+        num_listed_gws += 1
         listed_sinks = set(gw.sinks)
+        num_listed_sinks += len(listed_sinks)
 
         sinks_info = {}
         for _ in range(args.retry_count):
@@ -261,6 +268,8 @@ def command_info():
         if len(sinks_info) == 0:
             print_msg(f"gw: {gw_id}, timed out")
             continue
+
+        num_found_gws += 1
 
         if False:  # DEBUG
             print_msg(
@@ -300,10 +309,14 @@ def command_info():
 
             if sink_info is not None and scr_status is not None:
                 msg = f'gw: {gw_id}, sink: {sink_id}, started: {sink_info["started"]}, node_addr: {sink_info["node_address"]}, nw_addr: 0x{sink_info["network_address"]:08x}, nw_ch: {sink_info["network_channel"]}, st_len: {scr_status["stored_scratchpad"]["len"]}, st_crc: 0x{scr_status["stored_scratchpad"]["crc"]:04x}, st_seq: {scr_status["stored_scratchpad"]["seq"]}, app_c_seq: {sink_info["app_config_seq"]}, app_c_diag: {sink_info["app_config_diag"]}'
+                num_found_sinks += 1
             else:
                 msg = f"gw: {gw_id}, sink: {sink_id}, timed out"
 
             print_msg(msg)
+
+        print_msg(f"listed gateways: {num_listed_gws}, gateways found: {num_found_gws}, gateways missing: {num_listed_gws - num_found_gws}")
+        print_msg(f"listed sinks: {num_listed_sinks}, sinks found: {num_found_sinks}, sinks missing: {num_listed_sinks - num_found_sinks}")
 
 
 def command_set_app_config():
