@@ -318,8 +318,8 @@ def command_info():
 
             print_msg(msg)
 
-        print_msg(f"listed gateways: {num_listed_gws}, gateways found: {num_found_gws}, gateways missing: {num_listed_gws - num_found_gws}")
-        print_msg(f"listed sinks: {num_listed_sinks}, sinks found: {num_found_sinks}, sinks missing: {num_listed_sinks - num_found_sinks}")
+    print_msg(f"listed gateways: {num_listed_gws}, gateways found: {num_found_gws}, gateways missing: {num_listed_gws - num_found_gws}")
+    print_msg(f"listed sinks: {num_listed_sinks}, sinks found: {num_found_sinks}, sinks missing: {num_listed_sinks - num_found_sinks}")
 
 
 def command_set_app_config():
