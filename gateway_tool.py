@@ -265,6 +265,9 @@ def command_info():
             if missing_sinks == 0:
                 break
 
+            # Wait a bit before trying again
+            time.sleep(1)
+
         if len(sinks_info) == 0:
             print_msg(f"gw: {gw_id}, timed out")
             continue
@@ -363,6 +366,9 @@ def command_set_app_config():
                 except TimeoutError:
                     pass
 
+                # Wait a bit before trying again
+                time.sleep(1)
+
             if success:
                 msg = f"gw: {gw_id}, sink: {sink_id}, app config set, app_c_seq: {args.app_config_seq}, app_c_diag: {args.app_config_diag}, otap_crc: 0x{otap_crc:04x}, otap_seq: {args.scratchpad_seq}, otap_action: 0x{otap_action:02x}"
             elif wrong_seq:
@@ -394,6 +400,9 @@ def command_upload_scratchpad():
                         break
                 except TimeoutError:
                     pass
+
+                # Wait a bit before trying again
+                time.sleep(1)
 
             if success:
                 msg = f"gw: {gw_id}, sink: {sink_id}, uploaded scratchpad, st_len: {len(scratchpad_data)}, st_crc: 0x{scratchpad_crc:04x}, st_seq: {args.scratchpad_seq}"
