@@ -428,7 +428,7 @@ def parse_arguments():
             # Read connection settings from INI file
             read_connection_ini(args.connection_ini)
         except ValueError as e:
-            parser.error("--connection_ini: %s" % str(e))
+            parser.error("connection_ini: %s" % str(e))
     finally:
         args.connection_ini.close()
 
@@ -464,7 +464,7 @@ def parse_arguments():
             _, agent_name = args.request.split(":", 1)
             args.request = Request["AGENT"]
     except KeyError:
-        parser.error("invalid --request: %s" % args.request)
+        parser.error("invalid request: %s" % args.request)
 
     if (
         args.feature_lock_key is not None
@@ -485,7 +485,7 @@ def parse_arguments():
         parser.error("invalid --update_delay: %d" % args.update_delay)
 
     if args.request == Request.UPDATE_SCRATCHPAD and not args.sequence:
-        parser.error("missing --sequence with --request=update_scratchpad")
+        parser.error("missing --sequence with request update_scratchpad")
 
     if args.sequence and (args.sequence < 1 or args.sequence > 254):
         parser.error("invalid --sequence: %d" % args.sequence)
