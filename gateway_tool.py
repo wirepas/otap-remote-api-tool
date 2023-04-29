@@ -318,8 +318,12 @@ def command_info():
 
             print_msg(msg)
 
-    print_msg(f"listed gateways: {num_listed_gws}, gateways found: {num_found_gws}, gateways missing: {num_listed_gws - num_found_gws}")
-    print_msg(f"listed sinks: {num_listed_sinks}, sinks found: {num_found_sinks}, sinks missing: {num_listed_sinks - num_found_sinks}")
+    print_msg(
+        f"listed gateways: {num_listed_gws}, gateways found: {num_found_gws}, gateways missing: {num_listed_gws - num_found_gws}"
+    )
+    print_msg(
+        f"listed sinks: {num_listed_sinks}, sinks found: {num_found_sinks}, sinks missing: {num_listed_sinks - num_found_sinks}"
+    )
 
 
 def command_set_app_config():
@@ -363,6 +367,7 @@ def command_set_app_config():
                     elif res == GatewayResultCode.GW_RES_INVLAID_SEQUENCE_NUMBER:
                         wrong_seq = True
                         break
+                    print_verbose(f"response: {repr(res)}")
                 except TimeoutError:
                     pass
 
@@ -398,6 +403,7 @@ def command_upload_scratchpad():
                     if res == GatewayResultCode.GW_RES_OK:
                         success = True
                         break
+                    print_verbose(f"response: {repr(res)}")
                 except TimeoutError:
                     pass
 
@@ -430,8 +436,6 @@ def main():
         insecure=not connection.mqtt_settings.use_tls,
         strict_mode=False,
     )
-
-    print_verbose("running main loop...")
 
     # Perform command
     if args.command == Command.INFO:

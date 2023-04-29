@@ -1,18 +1,33 @@
 #!/usr/bin/env python3
 
 import sys
+import os
 import re
 
-PATTERN = r'^data packet from gateway "([^"]*)" sink "([^"]*)"$'
+PATTERNS = [
+    r'^data packet from gateway "([^"]*)" sink "([^"]*)"$',
+    r"^gw: ([-_.0-9A-Za-z]+), sink: ([-_.0-9A-Za-z]+), timed out$",
+]
 
-infile = open(sys.argv[1], "r")
+if len(sys.argv) == 2:
+    infile = open(sys.argv[1], "r")
+elif len(sys.argv) == 1:
+    infile = sys.stdin
+else:
+    sys.stderr.write("Usage: %s [input_file]\n" % (os.path.split(sys.argv[0])[-1]))
+    exit(1)
 
 gateways = {}
 
 for line in infile:
-    match = re.match(PATTERN, line.strip())
+    line = line.strip()
+    for patt in PATTERNS:
+        match = re.match(patt, line)
+        if match:
+            break
     if not match:
         continue
+
     gateway = match[1]
     sink = match[2]
 
