@@ -309,6 +309,7 @@ def parse_arguments():
     """Parse command line arguments"""
 
     global args
+    global connection
 
     request_names = [n.name.lower() for n in Request]
 
@@ -434,7 +435,7 @@ def parse_arguments():
 
     if args.broadcast:
         # Broadcast
-        args.node_list = [None]
+        args.node_list = None
 
         print_msg("sending requests to all nodes")
     elif args.node_list:
@@ -484,10 +485,10 @@ def parse_arguments():
     if args.update_delay < 10 or args.update_delay > 32767:
         parser.error("invalid --update_delay: %d" % args.update_delay)
 
-    if args.request == Request.UPDATE_SCRATCHPAD and not args.sequence:
+    if args.request == Request.UPDATE_SCRATCHPAD and args.sequence is None:
         parser.error("missing --sequence with request update_scratchpad")
 
-    if args.sequence and (args.sequence < 1 or args.sequence > 254):
+    if args.sequence is not None and (args.sequence < 1 or args.sequence > 254):
         parser.error("invalid --sequence: %d" % args.sequence)
 
     # DEBUG: Show parsed command line arguments
@@ -518,9 +519,8 @@ def parse_arguments():
             agent = agent_class.Agent(
                 agent_param,
                 agent_functions,
+                args,
                 connection,
-                args.repeat_delay,
-                args.node_list,
                 req_fragments,
                 keys,
             )
@@ -920,8 +920,11 @@ def main():
             first_req = False
 
             # Select next batch of nodes
-            end_index = min(index + args.batch_size, len(args.node_list))
-            nodes = args.node_list[index:end_index]
+            if args.node_list is not None:
+                end_index = min(index + args.batch_size, len(args.node_list))
+                nodes = args.node_list[index:end_index]
+            else:
+                nodes = [None]  # Broadcast
 
             # Time to send another message
             for gw_id in connection.gateways:
@@ -931,8 +934,10 @@ def main():
 
             last_message_time = now
 
-            index = end_index
-            if index == len(args.node_list):
+            # Wrap around at the end of node list
+            if args.node_list is not None and (end_index < len(args.node_list)):
+                index = end_index
+            else:
                 index = 0
 
 

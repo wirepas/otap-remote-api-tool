@@ -22,7 +22,7 @@ def parse_feature_lock_key(key):
     return " ".join(["%02X" % n for n in key_bytes])
 
 
-def read_connection_ini(file_, require_mqtt = True):
+def read_connection_ini(file_, require_mqtt=True):
     """Read connection settings INI file"""
 
     class MqttSettings:

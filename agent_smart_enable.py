@@ -45,9 +45,7 @@ class Agent:
     # Request timeout, seconds
     REQUEST_TIMEOUT = 3 * 60  # Three minutes
 
-    def __init__(
-        self, param, functions, connection, repeat_delay, node_list, req_fragments, keys
-    ):
+    def __init__(self, param, functions, args, connection, req_fragments, keys):
         def not_impl(*args, **kwargs):
             pass
 
@@ -63,7 +61,8 @@ class Agent:
             self.print_msg("agent: __init__()")
 
         self.connection = connection
-        self.node_list = node_list
+        self.node_list = args.node_list  # None means broadcast, or allow all
+        self.update_seq = args.sequence  # None for no automatic update request
         self.req_fragments = req_fragments
         self.keys = keys
 
@@ -74,7 +73,7 @@ class Agent:
         self.db = node_db.NodeDb(params[0])
 
         self.allowed_seqs = _read_allowed_seqs(params[1])
-        self.request_repeat_interval = repeat_delay
+        self.request_repeat_interval = args.repeat_delay
         self.last_periodic_ts = time.time()  # Starts after one periodic interval
 
     def periodic(self):
@@ -126,7 +125,7 @@ class Agent:
 
         node_addr = recv_packet.source_address
 
-        if None not in self.node_list and node_addr not in self.node_list:
+        if self.node_list is not None and node_addr not in self.node_list:
             # Not in node list and not broadcast, leave
             return
 
@@ -254,6 +253,16 @@ class Agent:
             # Check stored sequence number and lock / unlock accordingly
             lock = info["st_seq"] not in self.allowed_seqs
 
+            # Targeted scratchpad update request
+            scr_update = (
+                self.update_seq is not None
+                and info["st_sta"] == 0xFF
+                and info["st_seq"] == self.update_seq
+            )
+
+            if scr_update:
+                # Always send lock / unlock request if scratchpad update requested
+                pass
             if lock and (info["lock_status"] == node_db.OtapLockStatus.LOCKED):
                 self.print_info(f"node {node_addr} already locked, nothing to do")
                 return node_db.Phase.DONE, updates
@@ -262,12 +271,12 @@ class Agent:
                 return node_db.Phase.DONE, updates
 
             self.print_info(
-                f"got info response from {node_addr}, sending {lock and 'lock' or 'unlock'} request"
+                f'got info response from {node_addr}, sending {scr_update and f"seq {self.update_seq} update and " or ""}{lock and "lock" or "unlock"} request'
             )
 
             # Info response OK, send lock or unlock request
             last_req = self._send_lock_unlock_req(
-                recv_packet, info["lock_status"], lock
+                recv_packet, info["lock_status"], lock, scr_update
             )
             updates["last_req"] = last_req
 
@@ -396,7 +405,7 @@ class Agent:
 
         return info
 
-    def _send_lock_unlock_req(self, recv_packet, lock_status, new_lock):
+    def _send_lock_unlock_req(self, recv_packet, lock_status, new_lock, scr_update):
         gw_id = recv_packet.header.gw_id
         sink_id = recv_packet.header.sink_id
 
@@ -413,6 +422,12 @@ class Agent:
             # Feature Lock Key not set, must use plain Begin request
             begin_req = "01 00"
 
+        if scr_update:
+            # MSAP Scratchpad Update
+            update_req = "1A 01 %02X" % self.update_seq
+        else:
+            update_req = ""
+
         # Ping with timestamp + Begin + Set Feature Lock Bits +
         # Set Feature Lock Key + End + Update
         payload = (
@@ -422,27 +437,43 @@ class Agent:
             + (new_lock and "0D 06 16 00 FF FF FF 7F" or "0D 06 16 00 FF FF FF FF")
             + "0D 12 17 00"
             + (new_lock and self.keys["new_key"] or self.keys["no_key"])
+            + update_req
             + self.req_fragments["end_and_update"]
         )
         self.send_remote_api_request(payload, gw_id, sink_id, node_addr)
         return req_ts
 
     def _parse_lock_unlock_resp(self, node_info, recv_packet):
-        resp = self._parse_common_resp(node_info, recv_packet, 6)
+        resp = self._parse_common_resp(node_info, recv_packet, None)
         if not resp:
             return None
 
         if False:  # DEBUG
             self.print_msg(repr(resp))
 
-        if (
-            resp[1]["type"]
-            not in (RemoteApiResponse.BEGIN, RemoteApiResponse.BEGIN_WITH_LOCK)
-            or resp[2]["type"] != RemoteApiResponse.WRITE_CSAP_ATTRIBUTE
-            or resp[3]["type"] != RemoteApiResponse.WRITE_CSAP_ATTRIBUTE
-            or resp[4]["type"] != RemoteApiResponse.END
-            or resp[5]["type"] != RemoteApiResponse.UPDATE
-        ):
+        try:
+            if len(resp) not in (6, 7):
+                raise ValueError
+
+            if (
+                resp[1]["type"]
+                not in (RemoteApiResponse.BEGIN, RemoteApiResponse.BEGIN_WITH_LOCK)
+                or resp[2]["type"] != RemoteApiResponse.WRITE_CSAP_ATTRIBUTE
+                or resp[3]["type"] != RemoteApiResponse.WRITE_CSAP_ATTRIBUTE
+            ):
+                raise ValueError
+
+            # Optional MSAP Scratchpad Update response
+            n = 4
+            if resp[n]["type"] == RemoteApiResponse.MSAP_SCRATCHPAD_UPDATE:
+                n += 1
+
+            if (
+                resp[n]["type"] != RemoteApiResponse.END
+                or resp[n + 1]["type"] != RemoteApiResponse.UPDATE
+            ):
+                raise ValueError
+        except ValueError:
             # Not a valid lock / unlock response
             self.print_verbose(
                 "invalid remote api lock / unlock response packet format"
@@ -519,10 +550,7 @@ def _parse_remote_api_response(payload):
                 "fw_crc": fw_crc,
                 "fw_seq": fw_seq,
                 "fw_id": fw_id,
-                "fw_maj": fw_maj,
-                "fw_min": fw_min,
-                "fw_mnt": fw_mnt,
-                "fw_dev": fw_dev,
+                "fw_ver": _version_as_uint32_le(fw_maj, fw_min, fw_mnt, fw_dev),
             }
 
             if tlv_len >= 39:
@@ -537,18 +565,17 @@ def _parse_remote_api_response(payload):
                     app_dev,
                 ) = struct.unpack("<LHBLBBBB", tlv_payload[24:39])
 
-            resp.update(
-                {
-                    "app_len": app_len,
-                    "app_crc": app_crc,
-                    "app_seq": app_seq,
-                    "app_id": app_id,
-                    "app_maj": app_maj,
-                    "app_min": app_min,
-                    "app_mnt": app_mnt,
-                    "app_dev": app_dev,
-                }
-            )
+                resp.update(
+                    {
+                        "app_len": app_len,
+                        "app_crc": app_crc,
+                        "app_seq": app_seq,
+                        "app_id": app_id,
+                        "app_ver": _version_as_uint32_le(
+                            app_maj, app_min, app_mnt, app_dev
+                        ),
+                    }
+                )
         elif tlv_type in (
             RemoteApiResponse.WRITE_CSAP_ATTRIBUTE.value,
             RemoteApiResponse.READ_CSAP_ATTRIBUTE.value,
@@ -604,6 +631,22 @@ def _parse_remote_api_response(payload):
 
 def _timestamp_as_hex(ts):
     return " ".join(["%02X" % b for b in struct.pack("<L", ts)])
+
+
+def _version_as_uint32_le(major, minor, maint, devel):
+    """Convert a major.minor.maintenance.development version number to a little-endian 32-bit integer"""
+
+    if (
+        (major < 0 or major > 255)
+        or (minor < 0 or minor > 255)
+        or (maint < 0 or maint > 255)
+        or (devel < 0 or devel > 255)
+    ):
+        raise ValueError("each version number component must be 0..255")
+
+    # For the most efficient use of an SQLite3 database,
+    # convert version number to a little-endian 32-bit integer
+    return (major << 24) | (minor << 16) | (maint << 8) | devel
 
 
 def _read_allowed_seqs(filename):
