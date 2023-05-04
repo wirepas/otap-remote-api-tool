@@ -123,6 +123,15 @@ def parse_arguments():
     )
 
     parser.add_argument(
+        "-b",
+        "--batch_size",
+        metavar="num",
+        type=int,
+        default=10,
+        help="maximum number of parallel requests (default 10)",
+    )
+
+    parser.add_argument(
         "-a",
         "--app_config_seq",
         metavar="seq",
@@ -394,31 +403,69 @@ def command_upload_scratchpad():
     global scratchpad_crc
     global wni
 
+    sinks_to_try = []
+    sinks_in_progress = set()
+    upload_results = []
+
+    def upload_done_cb(res, gw_sink):
+        nonlocal sinks_in_progress
+        nonlocal upload_results
+
+        # Not in progress anymore, move to the results list
+        sinks_in_progress.remove(gw_sink)
+        upload_results.append((res, gw_sink))
+
+    # Collect all sinks in a list
     for gw_id, gw in connection.gateways.items():
         for sink_id in gw.sinks:
-            success = False
-            for _ in range(args.retry_count):
-                try:
-                    # Upload scratchpad
-                    res = wni.upload_scratchpad(
-                        gw_id, sink_id, args.scratchpad_seq, scratchpad_data
-                    )
-                    if res == GatewayResultCode.GW_RES_OK:
-                        success = True
-                        break
-                    print_verbose(f"response: {repr(res)}")
-                except TimeoutError:
-                    pass
+            sinks_to_try.append((gw_id, sink_id))
 
-                # Wait a bit before trying again
-                time.sleep(1)
-
-            if success:
-                msg = f"gw: {gw_id}, sink: {sink_id}, uploaded scratchpad, st_len: {len(scratchpad_data)}, st_crc: 0x{scratchpad_crc:04x}, st_seq: {args.scratchpad_seq}"
+    while (
+        len(sinks_to_try) > 0 or len(sinks_in_progress) > 0 or len(upload_results) > 0
+    ):
+        if len(upload_results) > 0:
+            res, gw_sink = upload_results.pop(0)
+            gw_id, sink_id = gw_sink
+            if res == GatewayResultCode.GW_RES_OK:
+                # Upload OK, nothing more to do for that sink
+                print_msg(f"gw: {gw_id}, sink: {sink_id}, upload done")
             else:
-                msg = f"gw: {gw_id}, sink: {sink_id}, timed out"
+                # Upload failed, add sink back to end of sinks_to_try list
+                sinks_to_try.append(gw_sink)
+                print_msg(f"gw: {gw_id}, sink: {sink_id}, upload failed: f{res}")
+            continue
 
-            print_msg(msg)
+        if len(sinks_in_progress) >= args.batch_size:
+            # Maximum number of parallel uploads in progress, wait for a bit
+            time.sleep(1)
+            continue
+
+        if len(sinks_to_try) == 0:
+            continue
+
+        gw_sink = sinks_to_try.pop(0)
+        sinks_in_progress.add(gw_sink)
+
+        gw_id, sink_id = gw_sink
+
+        print_msg(
+            f"gw: {gw_id}, sink: {sink_id}, uploading scratchpad, st_len: {len(scratchpad_data)}, st_crc: 0x{scratchpad_crc:04x}, st_seq: {args.scratchpad_seq}"
+        )
+
+        try:
+            # Start an asynchronous scratchpad upload
+            wni.upload_scratchpad(
+                gw_id,
+                sink_id,
+                args.scratchpad_seq,
+                scratchpad_data,
+                upload_done_cb,
+                gw_sink,
+            )
+        except TimeoutError:
+            # Could not start upload, return sink back to sinks_to_try list
+            sinks_in_progress.remove(gw_sink)
+            sinks_to_try.append(gw_sink)
 
 
 def main():
