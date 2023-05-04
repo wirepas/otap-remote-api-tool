@@ -404,15 +404,13 @@ def command_upload_scratchpad():
     global wni
 
     sinks_to_try = []
-    sinks_in_progress = set()
+    sinks_in_progress = {}
     upload_results = []
 
     def upload_done_cb(res, gw_sink):
-        nonlocal sinks_in_progress
         nonlocal upload_results
 
-        # Not in progress anymore, move to the results list
-        sinks_in_progress.remove(gw_sink)
+        # Got result, handle it in the main thread
         upload_results.append((res, gw_sink))
 
     # Collect all sinks in a list
@@ -423,8 +421,12 @@ def command_upload_scratchpad():
     while (
         len(sinks_to_try) > 0 or len(sinks_in_progress) > 0 or len(upload_results) > 0
     ):
+        # Handle results of uploads
         if len(upload_results) > 0:
             res, gw_sink = upload_results.pop(0)
+            sinks_in_progress.pop(
+                gw_sink, None
+            )  # May already have been removed earlier
             gw_id, sink_id = gw_sink
             if res == GatewayResultCode.GW_RES_OK:
                 # Upload OK, nothing more to do for that sink
@@ -432,8 +434,17 @@ def command_upload_scratchpad():
             else:
                 # Upload failed, add sink back to end of sinks_to_try list
                 sinks_to_try.append(gw_sink)
-                print_msg(f"gw: {gw_id}, sink: {sink_id}, upload failed: f{res}")
+                res_text = (res is None) and "timed out" or f"{res}"
+                print_msg(f"gw: {gw_id}, sink: {sink_id}, upload failed: {res_text}")
             continue
+
+        # Handle upload timeouts
+        now = time.time()
+        for gw_sink in sinks_in_progress:
+            if now - sinks_in_progress[gw_sink] >= args.timeout:
+                # Sink scratchpad upload timed out
+                upload_done_cb(None, gw_sink)
+                continue
 
         if len(sinks_in_progress) >= args.batch_size:
             # Maximum number of parallel uploads in progress, wait for a bit
@@ -444,7 +455,7 @@ def command_upload_scratchpad():
             continue
 
         gw_sink = sinks_to_try.pop(0)
-        sinks_in_progress.add(gw_sink)
+        sinks_in_progress[gw_sink] = time.time()
 
         gw_id, sink_id = gw_sink
 
@@ -464,7 +475,7 @@ def command_upload_scratchpad():
             )
         except TimeoutError:
             # Could not start upload, return sink back to sinks_to_try list
-            sinks_in_progress.remove(gw_sink)
+            sinks_in_progress.pop(gw_sink, None)
             sinks_to_try.append(gw_sink)
 
 
