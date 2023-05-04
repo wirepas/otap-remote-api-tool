@@ -262,7 +262,7 @@ def command_info():
             query_sinks = avail_sinks & listed_sinks
 
             # Try again if not all sinks found
-            if missing_sinks == 0:
+            if len(missing_sinks) == 0:
                 break
 
             # Wait a bit before trying again
@@ -311,8 +311,11 @@ def command_info():
                     scr_status = None
 
             if sink_info is not None and scr_status is not None:
-                msg = f'gw: {gw_id}, sink: {sink_id}, started: {sink_info["started"]}, node_addr: {sink_info["node_address"]}, nw_addr: 0x{sink_info["network_address"]:08x}, nw_ch: {sink_info["network_channel"]}, st_len: {scr_status["stored_scratchpad"]["len"]}, st_crc: 0x{scr_status["stored_scratchpad"]["crc"]:04x}, st_seq: {scr_status["stored_scratchpad"]["seq"]}, app_c_seq: {sink_info["app_config_seq"]}, app_c_diag: {sink_info["app_config_diag"]}'
-                num_found_sinks += 1
+                try:
+                    msg = f'gw: {gw_id}, sink: {sink_id}, started: {sink_info["started"]}, node_addr: {sink_info["node_address"]}, nw_addr: 0x{sink_info["network_address"]:08x}, nw_ch: {sink_info["network_channel"]}, st_len: {scr_status["stored_scratchpad"]["len"]}, st_crc: 0x{scr_status["stored_scratchpad"]["crc"]:04x}, st_seq: {scr_status["stored_scratchpad"]["seq"]}, app_c_seq: {sink_info["app_config_seq"]}, app_c_diag: {sink_info["app_config_diag"]}'
+                    num_found_sinks += 1
+                except KeyError:
+                    msg = f"gw: {gw_id}, sink: {sink_id}, missing info"
             else:
                 msg = f"gw: {gw_id}, sink: {sink_id}, timed out"
 
