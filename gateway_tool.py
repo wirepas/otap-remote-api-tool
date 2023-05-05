@@ -34,8 +34,8 @@ except ModuleNotFoundError:
     sys.exit(1)
 
 
-# Print upload summary every 60 seconds
-SUMMARY_TIMEOUT = 60
+# Print upload progress every 60 seconds
+PROGRESS_TIMEOUT = 60
 
 
 args = None
@@ -369,35 +369,88 @@ def command_set_app_config():
         "app_config_data": app_config_data,
     }
 
+    sinks_to_try = []
+    sinks_in_progress = {}
+    results = []
+
+    def request_done_cb(res, gw_sink):
+        # Got result, handle it in the main thread
+        nonlocal results
+        results.append((res, gw_sink))
+
+    # Collect all sinks in a list
     for gw_id, gw in connection.gateways.items():
         for sink_id in gw.sinks:
-            success = False
-            wrong_seq = False
-            for _ in range(args.retry_count):
-                try:
-                    # Set new app config
-                    res = wni.set_sink_config(gw_id, sink_id, new_app_config)
-                    if res == GatewayResultCode.GW_RES_OK:
-                        success = True
-                        break
-                    elif res == GatewayResultCode.GW_RES_INVLAID_SEQUENCE_NUMBER:
-                        wrong_seq = True
-                        break
-                    print_verbose(f"response: {repr(res)}")
-                except TimeoutError:
-                    pass
+            sinks_to_try.append((gw_id, sink_id))
 
-                # Wait a bit before trying again
-                time.sleep(1)
+    last_progress = 0
 
-            if success:
-                msg = f"gw: {gw_id}, sink: {sink_id}, app config set, app_c_seq: {args.app_config_seq}, app_c_diag: {args.app_config_diag}, otap_crc: 0x{otap_crc:04x}, otap_seq: {args.scratchpad_seq}, otap_action: 0x{otap_action:02x}"
-            elif wrong_seq:
-                msg = f"gw: {gw_id}, sink: {sink_id}, invalid app config seq"
+    while len(sinks_to_try) > 0 or len(sinks_in_progress) > 0 or len(results) > 0:
+        # Handle results of sink config requests
+        if len(results) > 0:
+            res, gw_sink = results.pop(0)
+            sinks_in_progress.pop(
+                gw_sink, None
+            )  # May already have been removed earlier
+            gw_id, sink_id = gw_sink
+            if res == GatewayResultCode.GW_RES_OK:
+                # Sink config set OK, nothing more to do for that sink
+                print_msg(f"gw: {gw_id}, sink: {sink_id}, app config set")
+            elif res == GatewayResultCode.GW_RES_INVLAID_SEQUENCE_NUMBER:
+                # Wrong sequence number, do not repeat request for that sink
+                print_msg(f"gw: {gw_id}, sink: {sink_id}, invalid app config seq")
             else:
-                msg = f"gw: {gw_id}, sink: {sink_id}, timed out"
+                # Sink config set failed, add sink back to end of sinks_to_try list
+                sinks_to_try.append(gw_sink)
+                res_text = (res is None) and "timed out" or f"{res}"
+                print_msg(
+                    f"gw: {gw_id}, sink: {sink_id}, failed to set app config: {res_text}"
+                )
+            continue
 
-            print_msg(msg)
+        now = time.time()
+
+        if now - last_progress > PROGRESS_TIMEOUT:
+            print_info(
+                f"setting app config on {len(sinks_to_try) + len(sinks_in_progress)} sinks, app_c_seq: {args.app_config_seq}, app_c_diag: {args.app_config_diag}, otap_crc: 0x{otap_crc:04x}, otap_seq: {args.scratchpad_seq}, otap_action: 0x{otap_action:02x}"
+            )
+            last_progress = now
+
+        # Handle request timeouts
+        for gw_sink in sinks_in_progress:
+            if now - sinks_in_progress[gw_sink] >= args.timeout:
+                # Request timed out
+                request_done_cb(None, gw_sink)
+                continue
+
+        if len(sinks_in_progress) >= args.batch_size:
+            # Maximum number of parallel requests in progress, wait for a bit
+            time.sleep(1)
+            continue
+
+        if len(sinks_to_try) == 0:
+            continue
+
+        gw_sink = sinks_to_try.pop(0)
+        sinks_in_progress[gw_sink] = time.time()
+
+        gw_id, sink_id = gw_sink
+
+        print_verbose(f"gw: {gw_id}, sink: {sink_id}, setting app config")
+
+        try:
+            # Asynchronously set sink configuration
+            wni.set_sink_config(
+                gw_id,
+                sink_id,
+                new_app_config,
+                request_done_cb,
+                gw_sink,
+            )
+        except TimeoutError:
+            # Could not start request, return sink back to sinks_to_try list
+            sinks_in_progress.pop(gw_sink, None)
+            sinks_to_try.append(gw_sink)
 
 
 def command_upload_scratchpad():
@@ -409,27 +462,24 @@ def command_upload_scratchpad():
 
     sinks_to_try = []
     sinks_in_progress = {}
-    upload_results = []
+    results = []
 
-    def upload_done_cb(res, gw_sink):
-        nonlocal upload_results
-
+    def request_done_cb(res, gw_sink):
         # Got result, handle it in the main thread
-        upload_results.append((res, gw_sink))
+        nonlocal results
+        results.append((res, gw_sink))
 
     # Collect all sinks in a list
     for gw_id, gw in connection.gateways.items():
         for sink_id in gw.sinks:
             sinks_to_try.append((gw_id, sink_id))
 
-    last_summary = 0
+    last_progress = 0
 
-    while (
-        len(sinks_to_try) > 0 or len(sinks_in_progress) > 0 or len(upload_results) > 0
-    ):
+    while len(sinks_to_try) > 0 or len(sinks_in_progress) > 0 or len(results) > 0:
         # Handle results of uploads
-        if len(upload_results) > 0:
-            res, gw_sink = upload_results.pop(0)
+        if len(results) > 0:
+            res, gw_sink = results.pop(0)
             sinks_in_progress.pop(
                 gw_sink, None
             )  # May already have been removed earlier
@@ -446,21 +496,21 @@ def command_upload_scratchpad():
 
         now = time.time()
 
-        if now - last_summary > SUMMARY_TIMEOUT:
+        if now - last_progress > PROGRESS_TIMEOUT:
             print_info(
                 f"uploading scratchpad to {len(sinks_to_try) + len(sinks_in_progress)} sinks, st_len: {len(scratchpad_data)}, st_crc: 0x{scratchpad_crc:04x}, st_seq: {args.scratchpad_seq}"
             )
-            last_summary = now
+            last_progress = now
 
-        # Handle upload timeouts
+        # Handle request timeouts
         for gw_sink in sinks_in_progress:
             if now - sinks_in_progress[gw_sink] >= args.timeout:
-                # Sink scratchpad upload timed out
-                upload_done_cb(None, gw_sink)
+                # Request timed out
+                request_done_cb(None, gw_sink)
                 continue
 
         if len(sinks_in_progress) >= args.batch_size:
-            # Maximum number of parallel uploads in progress, wait for a bit
+            # Maximum number of parallel requests in progress, wait for a bit
             time.sleep(1)
             continue
 
@@ -472,7 +522,7 @@ def command_upload_scratchpad():
 
         gw_id, sink_id = gw_sink
 
-        print_msg(f"gw: {gw_id}, sink: {sink_id}, uploading scratchpad")
+        print_verbose(f"gw: {gw_id}, sink: {sink_id}, uploading scratchpad")
 
         try:
             # Start an asynchronous scratchpad upload
@@ -481,11 +531,11 @@ def command_upload_scratchpad():
                 sink_id,
                 args.scratchpad_seq,
                 scratchpad_data,
-                upload_done_cb,
+                request_done_cb,
                 gw_sink,
             )
         except TimeoutError:
-            # Could not start upload, return sink back to sinks_to_try list
+            # Could not start request, return sink back to sinks_to_try list
             sinks_in_progress.pop(gw_sink, None)
             sinks_to_try.append(gw_sink)
 
