@@ -34,6 +34,10 @@ except ModuleNotFoundError:
     sys.exit(1)
 
 
+# Print upload summary every 60 seconds
+SUMMARY_TIMEOUT = 60
+
+
 args = None
 connection = None
 scratchpad_data = bytearray()
@@ -418,6 +422,8 @@ def command_upload_scratchpad():
         for sink_id in gw.sinks:
             sinks_to_try.append((gw_id, sink_id))
 
+    last_summary = 0
+
     while (
         len(sinks_to_try) > 0 or len(sinks_in_progress) > 0 or len(upload_results) > 0
     ):
@@ -438,8 +444,15 @@ def command_upload_scratchpad():
                 print_msg(f"gw: {gw_id}, sink: {sink_id}, upload failed: {res_text}")
             continue
 
-        # Handle upload timeouts
         now = time.time()
+
+        if now - last_summary > SUMMARY_TIMEOUT:
+            print_info(
+                f"uploading scratchpad to {len(sinks_to_try) + len(sinks_in_progress)} sinks, st_len: {len(scratchpad_data)}, st_crc: 0x{scratchpad_crc:04x}, st_seq: {args.scratchpad_seq}"
+            )
+            last_summary = now
+
+        # Handle upload timeouts
         for gw_sink in sinks_in_progress:
             if now - sinks_in_progress[gw_sink] >= args.timeout:
                 # Sink scratchpad upload timed out
@@ -459,9 +472,7 @@ def command_upload_scratchpad():
 
         gw_id, sink_id = gw_sink
 
-        print_msg(
-            f"gw: {gw_id}, sink: {sink_id}, uploading scratchpad, st_len: {len(scratchpad_data)}, st_crc: 0x{scratchpad_crc:04x}, st_seq: {args.scratchpad_seq}"
-        )
+        print_msg(f"gw: {gw_id}, sink: {sink_id}, uploading scratchpad")
 
         try:
             # Start an asynchronous scratchpad upload
