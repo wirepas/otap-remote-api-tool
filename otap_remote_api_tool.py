@@ -28,6 +28,12 @@ except ModuleNotFoundError:
     sys.exit(1)
 
 try:
+    from google.protobuf.message import DecodeError
+except ModuleNotFoundError:
+    print('module "protobuf" missing, install with "python3 -m pip install protobuf"')
+    sys.exit(1)
+
+try:
     # Import Protocol Buffers message classes
     sys.path.insert(0, "proto-py")
     import generic_message_pb2 as generic_message
@@ -657,9 +663,13 @@ def on_message(client, userdata, mqtt_msg):
 
     if mqtt_msg.topic.startswith("gw-event/received_data/"):
         # Wirepas Mesh data packet parse bytes to a Protocol Buffers message
-        proto_msg = generic_message.GenericMessage()
-        proto_msg.ParseFromString(mqtt_msg.payload)
-        recv_packet = proto_msg.wirepas.packet_received_event
+        try:
+            proto_msg = generic_message.GenericMessage()
+            proto_msg.ParseFromString(mqtt_msg.payload)
+            recv_packet = proto_msg.wirepas.packet_received_event
+        except DecodeError:
+            # Not a valid received packet, leave
+            return
 
         if args.any_source:
             print_info(

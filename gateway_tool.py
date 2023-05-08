@@ -429,6 +429,8 @@ def command_set_app_config():
             continue
 
         if len(sinks_to_try) == 0:
+            # Nothing to do, wait for a bit
+            time.sleep(1)
             continue
 
         gw_sink = sinks_to_try.pop(0)
@@ -515,6 +517,8 @@ def command_upload_scratchpad():
             continue
 
         if len(sinks_to_try) == 0:
+            # Nothing to do, wait for a bit
+            time.sleep(1)
             continue
 
         gw_sink = sinks_to_try.pop(0)
