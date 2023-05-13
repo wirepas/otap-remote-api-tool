@@ -517,7 +517,7 @@ def _parse_remote_api_response(payload):
             resp = {"type": RemoteApiResponse(tlv_type)}
         elif tlv_type == RemoteApiResponse.UPDATE.value and tlv_len == 2:
             # Update response
-            update_time = struct.unpack("<H", tlv_payload)
+            (update_time,) = struct.unpack("<H", tlv_payload)
             resp = {"type": RemoteApiResponse.UPDATE, "update_time": update_time}
         elif (
             tlv_type == RemoteApiResponse.MSAP_SCRATCHPAD_STATUS.value and tlv_len >= 24
@@ -576,6 +576,10 @@ def _parse_remote_api_response(payload):
                         ),
                     }
                 )
+        elif tlv_type == RemoteApiResponse.MSAP_SCRATCHPAD_UPDATE and tlv_len == 1:
+            # MSAP Scratchpad Update response
+            (st_seq,) = struct.unpack("<B", tlv_payload)
+            resp = {"type": RemoteApiResponse.MSAP_SCRATCHPAD_UPDATE, "st_seq": st_seq}
         elif tlv_type in (
             RemoteApiResponse.WRITE_CSAP_ATTRIBUTE.value,
             RemoteApiResponse.READ_CSAP_ATTRIBUTE.value,
@@ -618,7 +622,7 @@ def _parse_remote_api_response(payload):
             resp = {"type": RemoteApiResponse(tlv_type), "request": request}
 
             if tlv_len >= 3:
-                attribute = struct.unpack("<H", tlv_payload[1:])
+                (attribute,) = struct.unpack("<H", tlv_payload[1:])
                 resp.update({"attribute": attribute})
         else:
             raise ValueError("invalid tlv type or length")
