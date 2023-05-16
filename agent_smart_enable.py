@@ -263,7 +263,7 @@ class Agent:
             if scr_update:
                 # Always send lock / unlock request if scratchpad update requested
                 pass
-            if lock and (info["lock_status"] == node_db.OtapLockStatus.LOCKED):
+            elif lock and (info["lock_status"] == node_db.OtapLockStatus.LOCKED):
                 self.print_info(f"node {node_addr} already locked, nothing to do")
                 return node_db.Phase.DONE, updates
             elif not lock and (info["lock_status"] == node_db.OtapLockStatus.UNLOCKED):
