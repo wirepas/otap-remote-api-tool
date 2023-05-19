@@ -160,27 +160,25 @@ class Agent:
                     f"otap seq number changed from {seq_old} to {seq} on node {node_addr}"
                 )
 
-        last_info_new = updates.get("last_info", None)
-        if last_info is None or last_info_new is None or last_info_new > last_info:
-            # Update node information, if it is newer
-            self.db.open_transaction()
-            self.db.add_or_update_node(
-                node_addr,
-                last_seen=last_seen,
-                phase=phase,
-                node_role=updates.get("node_role", None),
-                lock_status=updates.get("lock_status", None),
-                last_req=updates.get("last_req", None),
-                last_resp=updates.get("last_resp", None),
-                last_info=updates.get("last_info", None),
-                st_len=updates.get("st_len", None),
-                st_crc=updates.get("st_crc", None),
-                st_seq=updates.get("st_seq", None),
-                st_type=updates.get("st_type", None),
-                st_status=updates.get("st_sta", None),
-                st_blob=updates.get("st_blob", None),
-            )
-            self.db.commit()
+        # Update node information
+        self.db.open_transaction()
+        self.db.add_or_update_node(
+            node_addr,
+            last_seen=last_seen,
+            phase=phase,
+            node_role=updates.get("node_role", None),
+            lock_status=updates.get("lock_status", None),
+            last_req=updates.get("last_req", None),
+            last_resp=updates.get("last_resp", None),
+            last_info=updates.get("last_info", None),
+            st_len=updates.get("st_len", None),
+            st_crc=updates.get("st_crc", None),
+            st_seq=updates.get("st_seq", None),
+            st_type=updates.get("st_type", None),
+            st_status=updates.get("st_sta", None),
+            st_blob=updates.get("st_blob", None),
+        )
+        self.db.commit()
 
     def generate_remote_api_request(self, gw_id, sink_id, node_addr):
         """Send handler function, called when it is time to send a request"""
