@@ -6,34 +6,10 @@
 
 import time
 import struct
-from enum import Enum
 
 import node_db
-
-
-class RemoteApiResponse(Enum):
-    """Remote API response types"""
-
-    PING = 0x80
-    BEGIN = 0x81
-    BEGIN_WITH_LOCK = 0x82
-    END = 0x83
-    CANCEL = 0x84
-    UPDATE = 0x85
-    WRITE_MSAP_ATTRIBUTE = 0x8B
-    READ_MSAP_ATTRIBUTE = 0x8C
-    WRITE_CSAP_ATTRIBUTE = 0x8D
-    READ_CSAP_ATTRIBUTE = 0x8E
-    MSAP_SCRATCHPAD_STATUS = 0x99
-    MSAP_SCRATCHPAD_UPDATE = 0x9A
-    ACCESS_DENIED = 0xF8
-    WRITE_ONLY_ATTRIBUTE = 0xF9
-    INVALID_BROADCAST_REQUEST = 0xFA
-    INVALID_BEGIN = 0xFB
-    NO_SPACE_FOR_RESPONSE = 0xFC
-    INVALID_VALUE = 0xFD
-    INVALID_LENGTH = 0xFE
-    UNKNOWN_REQUEST = 0xFF
+import remote_api
+from remote_api import RemoteApiResponse
 
 
 class Agent:
@@ -303,7 +279,7 @@ class Agent:
 
     def _parse_common_resp(self, node_info, recv_packet, resp_len=None):
         try:
-            resp = _parse_remote_api_response(recv_packet.payload)
+            resp = remote_api.parse_response(recv_packet.payload)
         except ValueError as exc:
             # Invalid response, ignore it
             self.print_info(exc)
@@ -312,7 +288,7 @@ class Agent:
         if False:  # DEBUG
             self.print_msg(repr(resp))
 
-        if not resp or (resp_len is not None and len(resp) != resp_len):
+        if resp_len is not None and len(resp) != resp_len:
             # Not a valid Remote API response packet
             self.print_verbose("invalid remote api response packet")
             return None
@@ -328,7 +304,6 @@ class Agent:
         if req_time != node_info["last_req"]:
             # Not a response to the last request
             self.print_verbose("remote api response packet timestamp not latest")
-            self.print_verbose(f"{repr(req_time)}, {repr(node_info['last_req'])}")
             return None
 
         # Request timestamp is OK
@@ -358,50 +333,52 @@ class Agent:
 
     def _parse_info_resp(self, node_info, recv_packet):
         resp = self._parse_common_resp(node_info, recv_packet, 5)
-        if not resp:
-            return resp
-
-        if resp[1]["type"] != RemoteApiResponse.MSAP_SCRATCHPAD_STATUS:
-            self.print_verbose("invalid remote api info response packet format")
+        if resp is None:
+            # Not a valid Remote API response packet
             return None
 
-        # Check stored scratchpad sequence number and other info
         info = {}
-        info.update(resp[1])
 
-        if resp[2]["type"] != RemoteApiResponse.READ_CSAP_ATTRIBUTE:
+        try:
+            if resp[1]["type"] != RemoteApiResponse.MSAP_SCRATCHPAD_STATUS:
+                raise ValueError
+
+            # Check stored scratchpad sequence number and other info
+            info.update(resp[1])
+
+            if resp[2]["type"] != RemoteApiResponse.READ_CSAP_ATTRIBUTE:
+                raise ValueError
+
+            info["node_role"] = resp[2]["value"]
+
+            if resp[3]["type"] != RemoteApiResponse.READ_CSAP_ATTRIBUTE:
+                raise ValueError
+
+            # Check if Feature Lock Bits set
+            lock_bits_set = resp[3]["value"] & 0x80000000 == 0
+
+            if resp[4]["type"] not in (
+                RemoteApiResponse.WRITE_ONLY_ATTRIBUTE,
+                RemoteApiResponse.INVALID_VALUE,
+            ):
+                raise ValueError
+
+            # Check if Feature Lock Key set
+            lock_key_set = resp[4]["type"] == RemoteApiResponse.WRITE_ONLY_ATTRIBUTE
+
+            if lock_bits_set and lock_key_set:
+                lock_status = node_db.OtapLockStatus.LOCKED
+            elif not lock_bits_set and lock_key_set:
+                lock_status = node_db.OtapLockStatus.UNLOCKED_KEY_SET
+            elif lock_bits_set and not lock_key_set:
+                lock_status = node_db.OtapLockStatus.UNLOCKED_BITS_SET
+            else:
+                lock_status = node_db.OtapLockStatus.UNLOCKED
+
+            info["lock_status"] = lock_status
+        except ValueError:
             self.print_verbose("invalid remote api info response packet format")
             return None
-
-        info["node_role"] = resp[2]["value"]
-
-        if resp[3]["type"] != RemoteApiResponse.READ_CSAP_ATTRIBUTE:
-            self.print_verbose("invalid remote api info response packet format")
-            return None
-
-        # Check if Feature Lock Bits set
-        lock_bits_set = resp[3]["value"] & 0x80000000 == 0
-
-        if resp[4]["type"] not in (
-            RemoteApiResponse.WRITE_ONLY_ATTRIBUTE,
-            RemoteApiResponse.INVALID_VALUE,
-        ):
-            self.print_verbose("invalid remote api info response packet format")
-            return None
-
-        # Check if Feature Lock Key set
-        lock_key_set = resp[4]["type"] == RemoteApiResponse.WRITE_ONLY_ATTRIBUTE
-
-        if lock_bits_set and lock_key_set:
-            lock_status = node_db.OtapLockStatus.LOCKED
-        elif not lock_bits_set and lock_key_set:
-            lock_status = node_db.OtapLockStatus.UNLOCKED_KEY_SET
-        elif lock_bits_set and not lock_key_set:
-            lock_status = node_db.OtapLockStatus.UNLOCKED_BITS_SET
-        else:
-            lock_status = node_db.OtapLockStatus.UNLOCKED
-
-        info["lock_status"] = lock_status
 
         return info
 
@@ -445,7 +422,8 @@ class Agent:
 
     def _parse_lock_unlock_resp(self, node_info, recv_packet):
         resp = self._parse_common_resp(node_info, recv_packet, None)
-        if not resp:
+        if resp is None:
+            # Not a valid Remote API response packet
             return None
 
         if False:  # DEBUG
@@ -485,152 +463,6 @@ class Agent:
 
         # Valid lock / unlock response
         return lock_bits_set
-
-
-def _parse_remote_api_response(payload):
-    """Parse a Remote API response to a list of dicts"""
-
-    records = []
-
-    while len(payload) > 0:
-        if len(payload) < 2:
-            raise ValueError("truncated tlv record")
-
-        tlv_type = payload[0]
-        tlv_len = payload[1]
-        tlv_payload = payload[2 : (2 + tlv_len)]
-
-        if len(tlv_payload) != tlv_len:
-            raise ValueError("truncated tlv record")
-
-        resp = None
-
-        if tlv_type == RemoteApiResponse.PING.value and tlv_len <= 16:
-            # Ping response
-            resp = {"type": RemoteApiResponse.PING, "payload": tlv_payload}
-        elif tlv_type in (
-            RemoteApiResponse.BEGIN.value,
-            RemoteApiResponse.BEGIN_WITH_LOCK.value,
-            RemoteApiResponse.END.value,
-        ):
-            # Begin, Begin_witk_lock or End response
-            resp = {"type": RemoteApiResponse(tlv_type)}
-        elif tlv_type == RemoteApiResponse.UPDATE.value and tlv_len == 2:
-            # Update response
-            (update_time,) = struct.unpack("<H", tlv_payload)
-            resp = {"type": RemoteApiResponse.UPDATE, "update_time": update_time}
-        elif (
-            tlv_type == RemoteApiResponse.MSAP_SCRATCHPAD_STATUS.value and tlv_len >= 24
-        ):
-            # MSAP Scratchpad Status response
-            (
-                st_len,
-                st_crc,
-                st_seq,
-                st_type,
-                st_sta,
-                fw_len,
-                fw_crc,
-                fw_seq,
-                fw_id,
-                fw_maj,
-                fw_min,
-                fw_mnt,
-                fw_dev,
-            ) = struct.unpack("<LHBBBLHBLBBBB", tlv_payload[:24])
-
-            resp = {
-                "type": RemoteApiResponse.MSAP_SCRATCHPAD_STATUS,
-                "st_len": st_len,
-                "st_crc": st_crc,
-                "st_seq": st_seq,
-                "st_type": st_type,
-                "st_sta": st_sta,
-                "fw_len": fw_len,
-                "fw_crc": fw_crc,
-                "fw_seq": fw_seq,
-                "fw_id": fw_id,
-                "fw_ver": _version_as_uint32_le(fw_maj, fw_min, fw_mnt, fw_dev),
-            }
-
-            if tlv_len >= 39:
-                (
-                    app_len,
-                    app_crc,
-                    app_seq,
-                    app_id,
-                    app_maj,
-                    app_min,
-                    app_mnt,
-                    app_dev,
-                ) = struct.unpack("<LHBLBBBB", tlv_payload[24:39])
-
-                resp.update(
-                    {
-                        "app_len": app_len,
-                        "app_crc": app_crc,
-                        "app_seq": app_seq,
-                        "app_id": app_id,
-                        "app_ver": _version_as_uint32_le(
-                            app_maj, app_min, app_mnt, app_dev
-                        ),
-                    }
-                )
-        elif tlv_type == RemoteApiResponse.MSAP_SCRATCHPAD_UPDATE and tlv_len == 1:
-            # MSAP Scratchpad Update response
-            (st_seq,) = struct.unpack("<B", tlv_payload)
-            resp = {"type": RemoteApiResponse.MSAP_SCRATCHPAD_UPDATE, "st_seq": st_seq}
-        elif tlv_type in (
-            RemoteApiResponse.WRITE_CSAP_ATTRIBUTE.value,
-            RemoteApiResponse.READ_CSAP_ATTRIBUTE.value,
-        ):
-            # Write or Read CSAP Attribute response
-            (attribute,) = struct.unpack("<H", tlv_payload[:2])
-
-            value = tlv_payload[2:]
-
-            if len(value) == 1:
-                value = value[0]
-            elif len(value) == 2:
-                (value,) = struct.unpack("<H", value)
-            elif len(value) == 3:
-                value, value_msb = struct.unpack("<HB", value)
-                value |= value_msb << 16
-            elif len(value) == 4:
-                (value,) = struct.unpack("<L", value)
-            else:
-                # Leave as bytes
-                pass
-
-            resp = {
-                "type": RemoteApiResponse(tlv_type),
-                "attribute": attribute,
-                "value": value,
-            }
-        elif tlv_type in (
-            RemoteApiResponse.ACCESS_DENIED.value,
-            RemoteApiResponse.WRITE_ONLY_ATTRIBUTE.value,
-            RemoteApiResponse.INVALID_BROADCAST_REQUEST.value,
-            RemoteApiResponse.INVALID_BEGIN.value,
-            RemoteApiResponse.NO_SPACE_FOR_RESPONSE.value,
-            RemoteApiResponse.INVALID_VALUE.value,
-            RemoteApiResponse.INVALID_LENGTH.value,
-            RemoteApiResponse.UNKNOWN_REQUEST.value,
-        ):
-            request = tlv_payload[0]
-
-            resp = {"type": RemoteApiResponse(tlv_type), "request": request}
-
-            if tlv_len >= 3:
-                (attribute,) = struct.unpack("<H", tlv_payload[1:])
-                resp.update({"attribute": attribute})
-        else:
-            raise ValueError("invalid tlv type or length")
-
-        records.append(resp)
-        payload = payload[(tlv_len + 2) :]
-
-    return records
 
 
 def _timestamp_as_hex(ts):
