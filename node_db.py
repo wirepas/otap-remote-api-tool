@@ -168,7 +168,20 @@ class NodeDb:
 
     def find_node(self, node_addr):
         cursor = self.conn.execute(FIND_QUERY, {"node_addr": node_addr})
-        return cursor.fetchone()
+        row = cursor.fetchone()
+        if row is None:
+            return None
+
+        node_info = dict(row)
+
+        # Convert value to Enum
+        if node_info["phase"] is not None:
+            node_info["phase"] = Phase(node_info["phase"])
+
+        if node_info["lock_status"] is not None:
+            node_info["lock_status"] = OtapLockStatus(node_info["lock_status"])
+
+        return node_info
 
     def find_node_oldest_req(self, now=0, timeout=0):
         # Timeout may be zero or omitted, in which case only

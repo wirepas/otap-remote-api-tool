@@ -9,7 +9,7 @@ import struct
 
 import node_db
 import remote_api
-from remote_api import RemoteApiResponse
+from remote_api import RemoteApiResponseType
 
 
 class Agent:
@@ -65,6 +65,10 @@ class Agent:
             return
         self.last_periodic_ts = now
 
+        if self.request_repeat_interval == 0:
+            # Not sending periodic update requests
+            return
+
         # Find a node the oldest request time or missing info
         timeout = self.request_repeat_interval * 3 // 2  # 50% extra time
         node_addr = self.db.find_node_oldest_req(now, timeout)
@@ -99,13 +103,18 @@ class Agent:
             self.print_msg("agent: on_message()")
             self.print_msg(repr(recv_packet))
 
+        now = time.time()
         node_addr = recv_packet.source_address
 
         if self.node_list is not None and node_addr not in self.node_list:
             # Not in node list and not broadcast, leave
             return
 
-        rx_time = recv_packet.rx_time_ms_epoch / 1000.0
+        # TODO: Detect if the gateway clock is not set correctly
+        #       rx_time = (recv_packet.rx_time_ms_epoch -
+        #                  recv_packet.travel_time_ms) / 1000.0
+        rx_time = now - recv_packet.travel_time_ms / 1000.0
+
         last_seen = rx_time  # Update timestamp, unless newer packets already seen
         phase = node_db.Phase.INIT
         last_req = None
@@ -114,7 +123,7 @@ class Agent:
 
         # See if the node is known already
         node_info = self.db.find_node(node_addr)
-        if node_info:
+        if node_info is not None:
             last_info = node_info["last_info"]
             seq_old = node_info["st_seq"]
 
@@ -125,40 +134,44 @@ class Agent:
 
             # Get current phase, default to "INIT"
             if node_info["phase"] is not None:
-                phase = node_db.Phase(node_info["phase"])
-
-            now = time.time()
-
-            # Handle request timeouts
-            last_req = node_info["last_req"]
-            if phase != node_db.Phase.DONE and (
-                last_req is None or (now - last_req) >= self.REQUEST_TIMEOUT
-            ):
-                phase = node_db.Phase.INIT
-                self.print_info(f"node {node_addr} request timeout")
-
-            if self.request_repeat_interval:
-                # Request info periodically
-                last_info = node_info["last_info"]
-                if (
-                    phase == node_db.Phase.DONE
-                    and last_info is not None  # Shouldn't happen with Phase.DONE
-                    and (now - last_info) >= self.request_repeat_interval
-                ):
-                    phase = node_db.Phase.INIT
-                    self.print_info(f"node {node_addr} periodic request")
+                phase = node_info["phase"]
         else:
             self.print_info(f"new node {node_addr} seen")
 
         # Run state machine
-        phase, updates = self._state_machine(phase, node_info, recv_packet)
+        phase, updates = self._state_machine(now, phase, node_info, recv_packet)
+
+        if "last_req" not in updates and node_info is not None:
+            # If no new request was sent, check request timeout and periodic
+            # info timeout here, and run the state machine again if needed
+            if phase != node_db.Phase.DONE:
+                # Handle request timeouts
+                last_req = node_info["last_req"]
+                if last_req is None or (now - last_req) >= self.REQUEST_TIMEOUT:
+                    self.print_info(f"node {node_addr} request timeout")
+                    phase = node_db.Phase.INIT
+            elif self.request_repeat_interval > 0:
+                # Request info periodically
+                last_info = node_info["last_info"]
+                if (
+                    last_info is not None  # Shouldn't happen with Phase.DONE
+                    and (now - last_info) >= self.request_repeat_interval
+                ):
+                    self.print_info(f"node {node_addr} periodic request")
+                    phase = node_db.Phase.INIT
+
+            if phase == node_db.Phase.INIT:
+                # Run state machine again
+                phase, updates2 = self._state_machine(now, phase, node_info, recv_packet)
+
+                # Combine updates from both state machine runs
+                updates.update(updates2)
 
         seq = updates.get("st_seq", None)
-        if seq_old is not None and seq is not None:
-            if seq_old != seq:
-                self.print_msg(
-                    f"otap seq number changed from {seq_old} to {seq} on node {node_addr}"
-                )
+        if seq_old is not None and seq is not None and seq_old != seq:
+            self.print_msg(
+                f"otap seq number changed from {seq_old} to {seq} on node {node_addr}"
+            )
 
         # Update node information
         self.db.open_transaction()
@@ -181,15 +194,15 @@ class Agent:
         self.db.commit()
 
     def generate_remote_api_request(self, gw_id, sink_id, node_addr):
-        """Send handler function, called when it is time to send a request"""
+        """Send handler function, called when it is time to send a request to a given node"""
 
         if False:  # DEBUG
             self.print_msg("agent: send_remote_api_request()")
 
-        # TODO: Return Remote API Request payload for the given node
+        # The smart enable agent has no use for this function
         return None
 
-    def _state_machine(self, phase, node_info, recv_packet):
+    def _state_machine(self, now, phase, node_info, recv_packet):
         """State machine for locking / unlocking nodes"""
 
         updates = {}
@@ -197,7 +210,11 @@ class Agent:
         node_addr = recv_packet.source_address
         source_endpoint = recv_packet.source_endpoint
         dest_endpoint = recv_packet.destination_endpoint
-        rx_time = recv_packet.rx_time_ms_epoch / 1000.0
+
+        # TODO: Detect if the gateway clock is not set correctly
+        #       rx_time = (recv_packet.rx_time_ms_epoch -
+        #                  recv_packet.travel_time_ms) / 1000.0
+        rx_time = now - recv_packet.travel_time_ms / 1000.0
 
         if phase == node_db.Phase.INIT:
             self.print_info(f"sending info request to {node_addr}")
@@ -292,7 +309,10 @@ class Agent:
             return None
 
         # Check first response type and payload length
-        if resp[0]["type"] != RemoteApiResponse.PING or len(resp[0]["payload"]) != 4:
+        if (
+            resp[0]["type"] != RemoteApiResponseType.PING
+            or len(resp[0]["payload"]) != 4
+        ):
             # No PING response as the first response in the packet
             self.print_verbose("missing ping payload in remote api response packet")
             return None
@@ -338,31 +358,31 @@ class Agent:
         info = {}
 
         try:
-            if resp[1]["type"] != RemoteApiResponse.MSAP_SCRATCHPAD_STATUS:
+            if resp[1]["type"] != RemoteApiResponseType.MSAP_SCRATCHPAD_STATUS:
                 raise ValueError
 
             # Check stored scratchpad sequence number and other info
             info.update(resp[1])
 
-            if resp[2]["type"] != RemoteApiResponse.READ_CSAP_ATTRIBUTE:
+            if resp[2]["type"] != RemoteApiResponseType.READ_CSAP_ATTRIBUTE:
                 raise ValueError
 
             info["node_role"] = resp[2]["value"]
 
-            if resp[3]["type"] != RemoteApiResponse.READ_CSAP_ATTRIBUTE:
+            if resp[3]["type"] != RemoteApiResponseType.READ_CSAP_ATTRIBUTE:
                 raise ValueError
 
             # Check if Feature Lock Bits set
             lock_bits_set = resp[3]["value"] & 0x80000000 == 0
 
             if resp[4]["type"] not in (
-                RemoteApiResponse.WRITE_ONLY_ATTRIBUTE,
-                RemoteApiResponse.INVALID_VALUE,
+                RemoteApiResponseType.WRITE_ONLY_ATTRIBUTE,
+                RemoteApiResponseType.INVALID_VALUE,
             ):
                 raise ValueError
 
             # Check if Feature Lock Key set
-            lock_key_set = resp[4]["type"] == RemoteApiResponse.WRITE_ONLY_ATTRIBUTE
+            lock_key_set = resp[4]["type"] == RemoteApiResponseType.WRITE_ONLY_ATTRIBUTE
 
             if lock_bits_set and lock_key_set:
                 lock_status = node_db.OtapLockStatus.LOCKED
@@ -433,20 +453,23 @@ class Agent:
 
             if (
                 resp[1]["type"]
-                not in (RemoteApiResponse.BEGIN, RemoteApiResponse.BEGIN_WITH_LOCK)
-                or resp[2]["type"] != RemoteApiResponse.WRITE_CSAP_ATTRIBUTE
-                or resp[3]["type"] != RemoteApiResponse.WRITE_CSAP_ATTRIBUTE
+                not in (
+                    RemoteApiResponseType.BEGIN,
+                    RemoteApiResponseType.BEGIN_WITH_LOCK,
+                )
+                or resp[2]["type"] != RemoteApiResponseType.WRITE_CSAP_ATTRIBUTE
+                or resp[3]["type"] != RemoteApiResponseType.WRITE_CSAP_ATTRIBUTE
             ):
                 raise ValueError
 
             # Optional MSAP Scratchpad Update response
             n = 4
-            if resp[n]["type"] == RemoteApiResponse.MSAP_SCRATCHPAD_UPDATE:
+            if resp[n]["type"] == RemoteApiResponseType.MSAP_SCRATCHPAD_UPDATE:
                 n += 1
 
             if (
-                resp[n]["type"] != RemoteApiResponse.END
-                or resp[n + 1]["type"] != RemoteApiResponse.UPDATE
+                resp[n]["type"] != RemoteApiResponseType.END
+                or resp[n + 1]["type"] != RemoteApiResponseType.UPDATE
             ):
                 raise ValueError
         except ValueError:

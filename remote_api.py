@@ -6,7 +6,7 @@ import struct
 from enum import Enum
 
 
-class RemoteApiResponse(Enum):
+class RemoteApiResponseType(Enum):
     """Remote API response types"""
 
     PING = 0x80
@@ -41,7 +41,7 @@ def parse_response(payload):
             raise ValueError("truncated tlv record")
 
         try:
-            tlv_type = RemoteApiResponse(payload[0])
+            tlv_type = RemoteApiResponseType(payload[0])
         except ValueError:
             raise ValueError("unknown tlv record type: 0x{payload[0]:02x}")
 
@@ -53,26 +53,26 @@ def parse_response(payload):
 
         resp = {"type": tlv_type}
 
-        if tlv_type == RemoteApiResponse.PING and tlv_len <= 16:
+        if tlv_type == RemoteApiResponseType.PING and tlv_len <= 16:
             # Ping response
             resp["payload"] = tlv_payload
         elif (
             tlv_type
             in (
-                RemoteApiResponse.BEGIN,
-                RemoteApiResponse.BEGIN_WITH_LOCK,
-                RemoteApiResponse.END,
-                RemoteApiResponse.CANCEL,
+                RemoteApiResponseType.BEGIN,
+                RemoteApiResponseType.BEGIN_WITH_LOCK,
+                RemoteApiResponseType.END,
+                RemoteApiResponseType.CANCEL,
             )
             and tlv_len == 0
         ):
             # Begin, Begin with Lock, End or Cancel response (no payload)
             pass
-        elif tlv_type == RemoteApiResponse.UPDATE and tlv_len == 2:
+        elif tlv_type == RemoteApiResponseType.UPDATE and tlv_len == 2:
             # Update response
             (update_time,) = struct.unpack("<H", tlv_payload)
             resp["update_time"] = update_time
-        elif tlv_type == RemoteApiResponse.MSAP_SCRATCHPAD_STATUS and tlv_len >= 24:
+        elif tlv_type == RemoteApiResponseType.MSAP_SCRATCHPAD_STATUS and tlv_len >= 24:
             # MSAP Scratchpad Status response
             (
                 st_len,
@@ -91,7 +91,7 @@ def parse_response(payload):
             ) = struct.unpack("<LHBBBLHBLBBBB", tlv_payload[:24])
 
             scr_status = {
-                "type": RemoteApiResponse.MSAP_SCRATCHPAD_STATUS,
+                "type": RemoteApiResponseType.MSAP_SCRATCHPAD_STATUS,
                 "st_len": st_len,
                 "st_crc": st_crc,
                 "st_seq": st_seq,
@@ -127,15 +127,15 @@ def parse_response(payload):
                 )
 
                 resp.update(scr_status)
-        elif tlv_type == RemoteApiResponse.MSAP_SCRATCHPAD_UPDATE and tlv_len == 1:
+        elif tlv_type == RemoteApiResponseType.MSAP_SCRATCHPAD_UPDATE and tlv_len == 1:
             # MSAP Scratchpad Update response
             (st_seq,) = struct.unpack("<B", tlv_payload)
             resp["st_seq"] = st_seq
         elif tlv_type in (
-            RemoteApiResponse.WRITE_MSAP_ATTRIBUTE,
-            RemoteApiResponse.READ_MSAP_ATTRIBUTE,
-            RemoteApiResponse.WRITE_CSAP_ATTRIBUTE,
-            RemoteApiResponse.READ_CSAP_ATTRIBUTE,
+            RemoteApiResponseType.WRITE_MSAP_ATTRIBUTE,
+            RemoteApiResponseType.READ_MSAP_ATTRIBUTE,
+            RemoteApiResponseType.WRITE_CSAP_ATTRIBUTE,
+            RemoteApiResponseType.READ_CSAP_ATTRIBUTE,
         ):
             # Write or Read MSAP or CSAP Attribute response
             (attribute,) = struct.unpack("<H", tlv_payload[:2])
@@ -159,14 +159,14 @@ def parse_response(payload):
 
             resp["value"] = value
         elif tlv_type in (
-            RemoteApiResponse.ACCESS_DENIED,
-            RemoteApiResponse.WRITE_ONLY_ATTRIBUTE,
-            RemoteApiResponse.INVALID_BROADCAST_REQUEST,
-            RemoteApiResponse.INVALID_BEGIN,
-            RemoteApiResponse.NO_SPACE_FOR_RESPONSE,
-            RemoteApiResponse.INVALID_VALUE,
-            RemoteApiResponse.INVALID_LENGTH,
-            RemoteApiResponse.UNKNOWN_REQUEST,
+            RemoteApiResponseType.ACCESS_DENIED,
+            RemoteApiResponseType.WRITE_ONLY_ATTRIBUTE,
+            RemoteApiResponseType.INVALID_BROADCAST_REQUEST,
+            RemoteApiResponseType.INVALID_BEGIN,
+            RemoteApiResponseType.NO_SPACE_FOR_RESPONSE,
+            RemoteApiResponseType.INVALID_VALUE,
+            RemoteApiResponseType.INVALID_LENGTH,
+            RemoteApiResponseType.UNKNOWN_REQUEST,
         ) and tlv_len in (1, 3):
             # Error response
             request = tlv_payload[0]

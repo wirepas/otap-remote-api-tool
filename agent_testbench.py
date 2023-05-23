@@ -85,7 +85,7 @@ def receive_next_packet():
     recv_packet.payload = b""
 
     # Test payload
-#    payload = "80 04 da 37 66 64 82 00 8d 06 16 00 ff ff ff ff 8d 02 17 00 9a 01 7d 83 00 85 02 0b 00"
+    #    payload = "80 04 da 37 66 64 82 00 8d 06 16 00 ff ff ff ff 8d 02 17 00 9a 01 7d 83 00 85 02 0b 00"
     payload = "80 04 2b da 66 64 82 00 8d 06 16 00 ff ff ff ff 8d 02 17 00 9a 01 7d 83 00 85 02 10 00"
     recv_packet.payload = binascii.unhexlify(payload.replace(" ", ""))
 
