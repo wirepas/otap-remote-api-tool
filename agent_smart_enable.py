@@ -106,10 +106,6 @@ class Agent:
         now = time.time()
         node_addr = recv_packet.source_address
 
-        if self.node_list is not None and node_addr not in self.node_list:
-            # Not in node list and not broadcast, leave
-            return
-
         # TODO: Detect if the gateway clock is not set correctly
         #       rx_time = (recv_packet.rx_time_ms_epoch -
         #                  recv_packet.travel_time_ms) / 1000.0
@@ -250,6 +246,15 @@ class Agent:
                 and info["st_sta"] == 0xFF
                 and info["st_seq"] == self.update_seq
             )
+
+            # Only lock, never unlock (or update) nodes that are not in the node list
+            if self.node_list is not None and node_addr not in self.node_list:
+                if not lock:
+                    self.print_info(f"node {node_addr} not listed, nothing to do")
+                    return node_db.Phase.DONE, updates
+
+                # Never send scratchpad update request to unlisted nodes
+                scr_update = False
 
             if scr_update:
                 # Always send lock / unlock request if scratchpad update requested
