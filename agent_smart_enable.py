@@ -158,7 +158,9 @@ class Agent:
 
             if phase == node_db.Phase.INIT:
                 # Run state machine again
-                phase, updates2 = self._state_machine(now, phase, node_info, recv_packet)
+                phase, updates2 = self._state_machine(
+                    now, phase, node_info, recv_packet
+                )
 
                 # Combine updates from both state machine runs
                 updates.update(updates2)
