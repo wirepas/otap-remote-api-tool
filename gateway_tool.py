@@ -410,15 +410,16 @@ def command_find_gws_sinks():
 
     print_verbose(f"finding gateways")
 
-    gws_found = []
+    gws_found = set()
     for _ in range(args.retry_count):
         try:
-            gws_found = set(wni.get_gateways())
+            gws_found |= set(wni.get_gateways())
         except TimeoutError:
-            # Timed out, wait a bit before trying again
-            time.sleep(1)
-            continue
-        break
+            # Timed out, try again
+            pass
+
+        # For enumerating gateways, repeat query for the full amount of retries
+        time.sleep(1)
 
     gws_listed = set(connection.gateways.keys())
     gws_missing = gws_listed - gws_found
@@ -459,9 +460,8 @@ def command_find_gws_sinks():
                 sinks_temp = wni.get_sinks(gateway=gw_id)
                 sinks_temp = dict([(s[1], s[2]) for s in sinks_temp])  # To dict
             except TimeoutError:
-                # Timed out, wait a bit before trying again
-                time.sleep(1)
-                continue
+                # Timed out, try again
+                sinks_temp = {}
 
             sinks.update(sinks_temp)
             sinks_found = set(sinks.keys())
@@ -472,6 +472,7 @@ def command_find_gws_sinks():
                     break
 
             # For extra gateways, repeat query for the full amount of retries
+            time.sleep(1)
 
         sinks_per_gw_found[gw_id] = sinks_found
 
@@ -484,7 +485,10 @@ def command_find_gws_sinks():
                 msg = "missing sink"
             else:
                 sink_info = sinks[sink_id]
-                msg = f'started: {sink_info["started"]}, node_addr: {sink_info["node_address"]}, nw_addr: 0x{sink_info["network_address"]:08x}, nw_ch: {sink_info["network_channel"]}, app_c_seq: {sink_info["app_config_seq"]}, app_c_diag: {sink_info["app_config_diag"]}'
+                try:
+                    msg = f'started: {sink_info["started"]}, node_addr: {sink_info["node_address"]}, nw_addr: 0x{sink_info["network_address"]:08x}, nw_ch: {sink_info["network_channel"]}, app_c_seq: {sink_info["app_config_seq"]}, app_c_diag: {sink_info["app_config_diag"]}'
+                except KeyError:
+                    msg = "missing information"
 
             extra_gw_msg = (gw_id not in gws_listed) and ", extra gw" or ""
             extra_sink_msg = (sink_id not in sinks_listed) and ", extra sink" or ""
@@ -508,7 +512,7 @@ def command_find_gws_sinks():
         # Write all listed and found gateways and sinks to an INI file fragment
         print_info(f"writing INI file fragment {args.write_ini_file.name}")
         for gw_id in gws_sorted:
-            args.write_ini_file.write(f"[gateway:{gw_id}]\n")
+            # Collect all listed and found sinks
             sinks_sorted = set()
             if gw_id in connection.gateways:
                 sinks_sorted |= set(connection.gateways[gw_id].sinks)
@@ -516,6 +520,40 @@ def command_find_gws_sinks():
                 sinks_sorted |= sinks_per_gw_found[gw_id]
             sinks_sorted = list(sinks_sorted)
             sinks_sorted.sort()
+
+            # Mention extra / missing gateways or sinks in a comment
+            comment_msg_list = []
+            if gw_id not in connection.gateways:
+                comment_msg_list.append(f"extra gw: {gw_id}")
+            elif gw_id not in sinks_per_gw_found:
+                comment_msg_list.append(f"missing gw: {gw_id}")
+            else:
+                sinks_missing = []
+                extra_sinks = []
+
+                for sink_id in sinks_sorted:
+                    if sink_id not in sinks_per_gw_found[gw_id]:
+                        # Missing sink
+                        sinks_missing.append(sink_id)
+                    elif sink_id not in connection.gateways[gw_id].sinks:
+                        # Extra sink
+                        extra_sinks.append(sink_id)
+
+                if len(sinks_missing) > 0 and len(extra_sinks) > 0:
+                    comment_msg_list.append(f'gw: {gw_id}')
+
+                if len(sinks_missing) > 0:
+                    comment_msg_list.append(f'sinks missing: {",".join(sinks_missing)}')
+
+                if len(extra_sinks) > 0:
+                    comment_msg_list.append(f'extra sinks: {",".join(extra_sinks)}')
+
+            if len(comment_msg_list) > 0:
+                # Print comment
+                args.write_ini_file.write(f'# NOTE: {", ".join(comment_msg_list)}\n')
+
+            # Print "gateway:" section with sinks
+            args.write_ini_file.write(f"[gateway:{gw_id}]\n")
             args.write_ini_file.write(f'sinks: {",".join(sinks_sorted)}\n\n')
         args.write_ini_file.close()
 
