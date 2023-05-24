@@ -539,7 +539,7 @@ def command_find_gws_sinks():
                         # Extra sink
                         extra_sinks.append(sink_id)
 
-                if len(sinks_missing) > 0 and len(extra_sinks) > 0:
+                if len(sinks_missing) > 0 or len(extra_sinks) > 0:
                     comment_msg_list.append(f'gw: {gw_id}')
 
                 if len(sinks_missing) > 0:
