@@ -291,6 +291,13 @@ def parse_arguments():
     )
 
     parser.add_argument(
+        "-p",
+        "--app_config_process",
+        action="store_true",
+        help="set the process flag for set_app_config command (default: propagate only)",
+    )
+
+    parser.add_argument(
         "-s",
         "--scratchpad_seq",
         metavar="seq",
@@ -364,7 +371,9 @@ def parse_arguments():
         args.app_config_data = app_config_data
         need_scratchpad_cmds = (Command.UPLOAD_SCRATCHPAD,)
 
-        if args.scratchpad_seq is not None or args.scratchpad_file is not None:
+        if args.app_config_process:
+            parser.error("--app_config_process cannot be used with --app_config_data")
+        elif args.scratchpad_seq is not None or args.scratchpad_file is not None:
             parser.error(
                 "--scratchpad_seq or --scratchpad_file cannot be used with --app_config_data"
             )
@@ -540,7 +549,7 @@ def command_find_gws_sinks():
                         extra_sinks.append(sink_id)
 
                 if len(sinks_missing) > 0 or len(extra_sinks) > 0:
-                    comment_msg_list.append(f'gw: {gw_id}')
+                    comment_msg_list.append(f"gw: {gw_id}")
 
                 if len(sinks_missing) > 0:
                     comment_msg_list.append(f'sinks missing: {",".join(sinks_missing)}')
@@ -646,7 +655,7 @@ def command_set_app_config():
         # App config data for v4.x OTAP Manager
         magic = enable_otap and 0xBA61 or 0x0000
         otap_crc = enable_otap and scratchpad_crc or 0x0000
-        otap_action = enable_otap and 0x02 or 0x00
+        otap_action = enable_otap and (args.app_config_process and 0x02 or 0x01) or 0x00
 
         app_config_data = bytearray(
             struct.pack("<HHBB", magic, otap_crc, args.scratchpad_seq, otap_action)
