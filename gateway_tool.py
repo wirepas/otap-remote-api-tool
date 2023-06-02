@@ -63,6 +63,7 @@ class Command(Enum):
     SCRATCHPAD_INFO = 1
     SET_APP_CONFIG = 2
     UPLOAD_SCRATCHPAD = 3
+    AUTO_UPLOAD = 4
 
 
 class ParallelWniRequests:
@@ -73,7 +74,9 @@ class ParallelWniRequests:
     ):
         # Initialize state variables
         self.wni = wni
-        self.sinks_to_try = []  # A list of tuples of (gw_id, sink_id)
+        self.sinks_to_try = (
+            []
+        )  # A list of tuples of (gw_id, sink_id), TODO: Use OrderedDict
         if gws_sinks_to_try is not None:
             self.sinks_to_try.insert(gws_sinks_to_try)
         self.sinks_in_progress = {}  # A dict of tuples of (gw_id, sink_id)
@@ -114,7 +117,7 @@ class ParallelWniRequests:
                     self.request_done(gw_id, sink_id, other_data)
                 else:
                     # Request failed, add sink back to end of sinks_to_try list
-                    if gw_sink not in self.sinks_to_try:
+                    if gw_sink not in self.sinks_to_try:  # TODO: Use OrderedDict
                         self.sinks_to_try.append(gw_sink)
                     self.request_failed(res, gw_id, sink_id, other_data)
                 continue
@@ -126,12 +129,13 @@ class ParallelWniRequests:
                 self.progress(len(self.sinks_to_try) + len(self.sinks_in_progress))
                 self.last_progress = now
 
+            now = time.time()
+
             # Handle request timeouts
             for gw_sink in self.sinks_in_progress:
                 if now - self.sinks_in_progress[gw_sink] >= self.timeout:
                     # Request timed out
                     self.request_done_cb(None, gw_sink)
-                    continue
 
             if len(self.sinks_in_progress) >= self.batch_size:
                 # Maximum number of parallel requests in progress, wait for a bit
@@ -143,10 +147,11 @@ class ParallelWniRequests:
                 time.sleep(1)
                 continue
 
+            # Get oldest sink from the list
             gw_sink = self.sinks_to_try.pop(0)
-            self.sinks_in_progress[gw_sink] = time.time()
-
             gw_id, sink_id = gw_sink
+
+            self.add_request_in_progress(gw_id, sink_id)
 
             try:
                 # Start an asynchronous request
@@ -156,6 +161,11 @@ class ParallelWniRequests:
                 self.sinks_in_progress.pop(gw_sink, None)
                 self.sinks_to_try.append(gw_sink)
                 self.request_failed(None, gw_id, sink_id, ())
+
+    def add_request_in_progress(self, gw_id, sink_id):
+        # May be called from request_done(), for multi-step requests
+        gw_sink = (gw_id, sink_id)
+        self.sinks_in_progress[gw_sink] = time.time()
 
     def perform_request(self, gw_id, sink_id):
         # Default implementation, should be overloaded
@@ -342,16 +352,16 @@ def parse_arguments():
     except KeyError:
         parser.error("invalid command: %s" % args.command)
 
-    if args.command == Command.SET_APP_CONFIG and args.app_config_seq is None:
-        parser.error("missing --app_config_seq with command set_app_config")
+    if args.command in (Command.SET_APP_CONFIG, Command.AUTO_UPLOAD) and args.app_config_seq is None:
+        parser.error("missing --app_config_seq with command set_app_config or auto_upload")
 
     if args.app_config_seq is not None and (
         args.app_config_seq < 0 or args.app_config_seq > 255
     ):
         parser.error("invalid --app_config_seq: %d" % args.app_config_seq)
 
-    if args.command == Command.SET_APP_CONFIG and args.app_config_diag is None:
-        parser.error("missing --app_config_diag with command set_app_config")
+    if args.command in (Command.SET_APP_CONFIG, Command.AUTO_UPLOAD) and args.app_config_diag is None:
+        parser.error("missing --app_config_diag with command set_app_config or auto_upload")
 
     if args.app_config_diag is not None and (
         args.app_config_diag < 0 or args.app_config_diag > 65535
@@ -379,11 +389,11 @@ def parse_arguments():
             )
     else:
         # App config data for v4.x OTAP Manager, need scratchpad seq and file
-        need_scratchpad_cmds = (Command.SET_APP_CONFIG, Command.UPLOAD_SCRATCHPAD)
+        need_scratchpad_cmds = (Command.SET_APP_CONFIG, Command.UPLOAD_SCRATCHPAD, Command.AUTO_UPLOAD)
 
     if args.command in need_scratchpad_cmds and args.scratchpad_seq is None:
         parser.error(
-            "missing --scratchpad_seq with command set_app_config or update_scratchpad"
+            "missing --scratchpad_seq with command set_app_config, update_scratchpad or auto_upload"
         )
 
     if args.scratchpad_seq is not None and (
@@ -393,7 +403,7 @@ def parse_arguments():
 
     if args.command in need_scratchpad_cmds and args.scratchpad_file is None:
         parser.error(
-            "missing --scratchpad_file with command set_app_config or update_scratchpad"
+            "missing --scratchpad_file with command set_app_config, update_scratchpad or auto_upload"
         )
 
     if args.scratchpad_file:
@@ -711,6 +721,304 @@ def command_upload_scratchpad():
             )
 
     preq = ParallelUploadRequests(wni, args.batch_size, args.timeout, op_text="upload")
+    preq.add_all_sinks(connection.gateways)
+    preq.run()
+
+
+def command_auto_upload():
+    global args
+    global connection
+    global wni
+
+    known_gws_sinks = {}
+
+    class StateMachine:
+        class State(Enum):
+            """Request state"""
+
+            SCRATCHPAD_INFO = 0
+            STOP_STACK = 1
+            UPLOAD_SCRATCHPAD = 2
+            SET_APP_CONFIG = 3
+            START_STACK = 4
+            UNLOCK_OTAP = 5
+
+        def __init__(self, gw_id, sink_id, wni, request_done_cb):
+            self.gw_id = gw_id
+            self.sink_id = sink_id
+            self.wni = wni
+            self.request_done_cb = request_done_cb
+            self.state = self.State.SCRATCHPAD_INFO
+            self.retry_count = None  # None for the first request, or an integer
+
+        def perform_request(self):
+            # Call the first request method
+            self.state = self.State.SCRATCHPAD_INFO
+            self.retry_count = None  # First request
+            StateMachine.__dict__[self.state.name.lower() + "_req"](self)
+
+        def request_done(self, other_data):
+            if self.retry_count is None:
+                # Call the response method, based on state
+                StateMachine.__dict__[self.state.name.lower() + "_resp"](self, other_data)
+
+            # Call the next request method, based on state
+            StateMachine.__dict__[self.state.name.lower() + "_req"](self)
+
+        def is_request_result_ok(self, res):
+            global args
+
+            retry_count = self.retry_count
+            self.retry_count = None  # First request, but may be modified below
+
+            if res == GatewayResultCode.GW_RES_OK:
+                if self.state == self.State.START_STACK:  # TODO: self.State.UNLOCK_OTAP
+                    # Last state completed, return sink to the back of list
+                    self.state = self.State.SCRATCHPAD_INFO
+                    return False
+
+                # Process response and advance to the next state
+                return True
+            elif (
+                self.state == self.State.SET_APP_CONFIG
+                and res == GatewayResultCode.GW_RES_INVLAID_SEQUENCE_NUMBER
+            ):
+                # Wrong sequence number, do not repeat request for that sink
+                print_msg(
+                    f"gw: {self.gw_id}, sink: {self.sink_id}, invalid app config seq"
+                )
+
+                # Process response and advance to the next state
+                return True
+
+            # Invalid response, or timed out
+            if retry_count is None:
+                retry_count = 1
+
+            retry_count += 1
+            if retry_count > args.retry_count:
+                # Too many retries, return sink to the back of list
+                self.state = self.State.SCRATCHPAD_INFO
+                return False
+
+            # Repeat previous request, when self.retry_count is not None
+            self.retry_count = retry_count
+            return True
+
+        def scratchpad_info_req(self):
+            print_verbose(
+                f"gw: {self.gw_id}, sink: {self.sink_id}, querying scratchpad info"
+            )
+
+            # Asynchronously query sink info
+            self.wni.get_scratchpad_status(
+                self.gw_id,
+                self.sink_id,
+                self.request_done_cb,
+                (self.gw_id, self.sink_id),
+            )
+
+        def scratchpad_info_resp(self, other_data):
+            global args
+            global scratchpad_data
+            global scratchpad_crc
+
+            try:
+                # Extract scratchpad info
+                scr_status = other_data[0]
+                st_len = scr_status["stored_scratchpad"]["len"]
+                st_crc = scr_status["stored_scratchpad"]["crc"]
+                st_seq = scr_status["stored_scratchpad"]["seq"]
+                msg = f"st_len: {st_len}, st_crc: 0x{st_crc:04x}, st_seq: {st_seq}"
+            except (IndexError, KeyError):
+                scr_status = None
+                msg = f"missing info"
+
+            # Print scratchpad info
+            print_msg(f"gw: {self.gw_id}, sink: {self.sink_id}, {msg}")
+
+            # Advance to the next state
+            if scr_status is None:
+                # Missing data, repeat request
+                self.state = self.State.SCRATCHPAD_INFO
+                # TODO: Somehow use retry_count here
+            elif (
+                st_len != len(scratchpad_data)
+                or st_crc != scratchpad_crc
+                or st_seq != args.scratchpad_seq
+            ):
+                # Scratchpad is not the correct one, stop the stack
+                self.state = self.State.STOP_STACK
+            else:
+                # Scratchpad is OK, unconditionally set app config and start the stack
+                self.state = self.State.SET_APP_CONFIG
+
+        def stop_stack_req(self):
+            print_verbose(f"gw: {self.gw_id}, sink: {self.sink_id}, stopping stack")
+
+            new_sink_config = {"started": False}
+
+            # Asynchronously set sink configuration
+            self.wni.set_sink_config(
+                self.gw_id,
+                self.sink_id,
+                new_sink_config,
+                self.request_done_cb,
+                (self.gw_id, self.sink_id),
+            )
+
+        def stop_stack_resp(self, other_data):
+            # Advance to the next state
+            self.state = self.State.UPLOAD_SCRATCHPAD
+
+        def upload_scratchpad_req(self):
+            global args
+            global scratchpad_data
+
+            print_verbose(
+                f"gw: {self.gw_id}, sink: {self.sink_id}, uploading scratchpad"
+            )
+
+            # Start an asynchronous scratchpad upload
+            self.wni.upload_scratchpad(
+                self.gw_id,
+                self.sink_id,
+                args.scratchpad_seq,
+                scratchpad_data,
+                self.request_done_cb,
+                (self.gw_id, self.sink_id),
+                timeout=args.timeout * 9 // 10,  # A bit shorter than request timeout
+            )
+
+        def upload_scratchpad_resp(self, other_data):
+            # Advance to the next state
+            self.state = self.State.SET_APP_CONFIG
+
+        def set_app_config_req(self):
+            nonlocal new_sink_config
+
+            print_verbose(
+                f"gw: {self.gw_id}, sink: {self.sink_id}, setting sink config"
+            )
+
+            # Asynchronously set sink configuration
+            self.wni.set_sink_config(
+                self.gw_id,
+                self.sink_id,
+                new_sink_config,
+                self.request_done_cb,
+                (self.gw_id, self.sink_id),
+            )
+
+        def set_app_config_resp(self, other_data):
+            # Advance to the next state
+            self.state = self.State.START_STACK
+
+        def start_stack_req(self):
+            print_verbose(f"gw: {self.gw_id}, sink: {self.sink_id}, starting stack")
+
+            new_sink_config = {"started": True}
+
+            # Asynchronously set sink configuration
+            self.wni.set_sink_config(
+                self.gw_id,
+                self.sink_id,
+                new_sink_config,
+                self.request_done_cb,
+                (self.gw_id, self.sink_id),
+            )
+
+        def start_stack_resp(self, other_data):
+            # Advance to the next state
+            self.state = self.State.UNLOCK_OTAP
+
+        def unlock_otap_req(self):
+            # TODO
+            pass
+
+        def unlock_otap_resp(self, other_data):
+            # TODO
+            pass
+
+    class ParallelAutoUploadRequests(ParallelWniRequests):
+        def perform_request(self, gw_id, sink_id):
+            nonlocal known_gws_sinks
+
+            gw_sink = (gw_id, sink_id)
+            sm = known_gws_sinks.get(gw_sink, None)
+            if sm is None:
+                # New gateway or sink, create a new state machine
+                sm = StateMachine(gw_id, sink_id, self.wni, self.request_done_cb)
+                known_gws_sinks[gw_sink] = sm
+
+            # Ask state machine to perform an asynchronous request
+            sm.perform_request()
+
+        def is_request_result_ok(self, res, gw_id, sink_id):
+            nonlocal known_gws_sinks
+
+            gw_sink = (gw_id, sink_id)
+            sm = known_gws_sinks.get(gw_sink, None)
+            if sm is not None:
+                # Ask state machine of response result
+                return sm.is_request_result_ok(res)
+
+            # Should not happen
+            return False
+
+        def request_done(self, gw_id, sink_id, other_data):
+            nonlocal known_gws_sinks
+
+            gw_sink = (gw_id, sink_id)
+            sm = known_gws_sinks.get(gw_sink, None)
+            if sm is not None:
+                # Feed response to state machine
+                sm.request_done(other_data)
+
+                # Retry request immediately
+                self.add_request_in_progress(gw_id, sink_id)
+
+        def request_failed(self, res, gw_id, sink_id, other_data):
+            # Suppress default prints
+            pass
+
+        def progress(self, num_sinks):
+            global args
+            global scratchpad_data
+            global scratchpad_crc
+
+            print_info(
+                f"performing automatic uploads on {num_sinks} sinks, st_len: {len(scratchpad_data)}, st_crc: 0x{scratchpad_crc:04x}, st_seq: {args.scratchpad_seq}, app_c_seq: {args.app_config_seq}"
+            )
+
+    enable_otap = args.scratchpad_seq != 0
+
+    if args.app_config_data is not None:
+        # Literal app config data
+        app_config_data = args.app_config_data
+        otap_crc = 0x0000  # Dummy, unused
+        otap_action = 0x00  # Dummy, unused
+    else:
+        # App config data for v4.x OTAP Manager
+        magic = enable_otap and 0xBA61 or 0x0000
+        otap_crc = enable_otap and scratchpad_crc or 0x0000
+        otap_action = enable_otap and (args.app_config_process and 0x02 or 0x01) or 0x00
+
+        app_config_data = bytearray(
+            struct.pack("<HHBB", magic, otap_crc, args.scratchpad_seq, otap_action)
+        )
+
+    print_verbose(
+        f'app config, seq: {args.app_config_seq}, diag: {args.app_config_diag}, data: {" ".join(["%02x" % n for n in app_config_data])}'
+    )
+
+    new_sink_config = {
+        "app_config_seq": args.app_config_seq,
+        "app_config_diag": args.app_config_diag,
+        "app_config_data": app_config_data,
+    }
+
+    preq = ParallelAutoUploadRequests(wni, args.batch_size, args.timeout)
     preq.add_all_sinks(connection.gateways)
     preq.run()
 
