@@ -1000,7 +1000,7 @@ def command_auto_upload():
         otap_action = 0x00  # Dummy, unused
     else:
         # App config data for v4.x OTAP Manager
-        magic = enable_otap and 0xBA61 or 0x0000
+        magic = 0xBA61
         otap_crc = enable_otap and scratchpad_crc or 0x0000
         otap_action = enable_otap and (args.app_config_process and 0x02 or 0x01) or 0x00
 
