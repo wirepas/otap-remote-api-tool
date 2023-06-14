@@ -9,13 +9,15 @@ PATTERNS = [
     r"^gw: ([-_.0-9A-Za-z]+), sink: ([-_.0-9A-Za-z]+), timed out$",
 ]
 
+pgmname = os.path.split(sys.argv[0])[-1]
+
 if len(sys.argv) == 2:
     infile = open(sys.argv[1], "r")
 elif len(sys.argv) == 1:
     infile = sys.stdin
 else:
-    sys.stderr.write("Usage: %s [input_file]\n" % (os.path.split(sys.argv[0])[-1]))
-    exit(1)
+    sys.stderr.write(f"Usage: {pgmname} [input_file]\n")
+    sys.exit(2)
 
 gateways = {}
 
