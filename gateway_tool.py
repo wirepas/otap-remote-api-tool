@@ -352,16 +352,26 @@ def parse_arguments():
     except KeyError:
         parser.error("invalid command: %s" % args.command)
 
-    if args.command in (Command.SET_APP_CONFIG, Command.AUTO_UPLOAD) and args.app_config_seq is None:
-        parser.error("missing --app_config_seq with command set_app_config or auto_upload")
+    if (
+        args.command in (Command.SET_APP_CONFIG, Command.AUTO_UPLOAD)
+        and args.app_config_seq is None
+    ):
+        parser.error(
+            "missing --app_config_seq with command set_app_config or auto_upload"
+        )
 
     if args.app_config_seq is not None and (
         args.app_config_seq < 0 or args.app_config_seq > 255
     ):
         parser.error("invalid --app_config_seq: %d" % args.app_config_seq)
 
-    if args.command in (Command.SET_APP_CONFIG, Command.AUTO_UPLOAD) and args.app_config_diag is None:
-        parser.error("missing --app_config_diag with command set_app_config or auto_upload")
+    if (
+        args.command in (Command.SET_APP_CONFIG, Command.AUTO_UPLOAD)
+        and args.app_config_diag is None
+    ):
+        parser.error(
+            "missing --app_config_diag with command set_app_config or auto_upload"
+        )
 
     if args.app_config_diag is not None and (
         args.app_config_diag < 0 or args.app_config_diag > 65535
@@ -379,17 +389,26 @@ def parse_arguments():
         except ValueError:
             parser.error('invalid --app_config_data: "%s"' % args.app_config_data)
         args.app_config_data = app_config_data
-        need_scratchpad_cmds = (Command.UPLOAD_SCRATCHPAD,)
+        need_scratchpad_cmds = (
+            Command.UPLOAD_SCRATCHPAD,
+            Command.AUTO_UPLOAD,
+        )
 
         if args.app_config_process:
             parser.error("--app_config_process cannot be used with --app_config_data")
-        elif args.scratchpad_seq is not None or args.scratchpad_file is not None:
+        elif args.command == Command.SET_APP_CONFIG and (
+            args.scratchpad_seq is not None or args.scratchpad_file is not None
+        ):
             parser.error(
                 "--scratchpad_seq or --scratchpad_file cannot be used with --app_config_data"
             )
     else:
         # App config data for v4.x OTAP Manager, need scratchpad seq and file
-        need_scratchpad_cmds = (Command.SET_APP_CONFIG, Command.UPLOAD_SCRATCHPAD, Command.AUTO_UPLOAD)
+        need_scratchpad_cmds = (
+            Command.SET_APP_CONFIG,
+            Command.UPLOAD_SCRATCHPAD,
+            Command.AUTO_UPLOAD,
+        )
 
     if args.command in need_scratchpad_cmds and args.scratchpad_seq is None:
         parser.error(
@@ -650,7 +669,7 @@ def command_set_app_config():
             if args.app_config_data is None:
                 msg = f", app_c_seq: {args.app_config_seq}, app_c_diag: {args.app_config_diag}, otap_crc: 0x{otap_crc:04x}, otap_seq: {args.scratchpad_seq}, otap_action: 0x{otap_action:02x}"
             else:
-                msg = ""
+                msg = f", app_c_seq: {args.app_config_seq}, app_c_diag: {args.app_config_diag}"
 
             print_info(f"setting sink config on {num_sinks} sinks{msg}")
 
@@ -760,7 +779,9 @@ def command_auto_upload():
         def request_done(self, other_data):
             if self.retry_count is None:
                 # Call the response method, based on state
-                StateMachine.__dict__[self.state.name.lower() + "_resp"](self, other_data)
+                StateMachine.__dict__[self.state.name.lower() + "_resp"](
+                    self, other_data
+                )
 
             # Call the next request method, based on state
             StateMachine.__dict__[self.state.name.lower() + "_req"](self)

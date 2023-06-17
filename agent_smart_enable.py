@@ -148,7 +148,7 @@ class Agent:
                     phase = node_db.Phase.INIT
             elif self.request_repeat_interval > 0:
                 # Request info periodically
-                last_info = node_info["last_info"]
+                last_info = updates.get("last_info", node_info["last_info"])
                 if (
                     last_info is not None  # Shouldn't happen with Phase.DONE
                     and (now - last_info) >= self.request_repeat_interval

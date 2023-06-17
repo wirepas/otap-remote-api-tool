@@ -556,7 +556,7 @@ def on_disconnect(client, userdata, rc):
     delay = random.randint(0, 20) + 10
     reconnect_ts = time.time() + delay
 
-    print_info("disconnected with result code %s, reconnecting in %d" % (rc, delay))
+    print_info("disconnected with result code %s, reconnecting in %d s" % (rc, delay))
 
 
 def parse_remote_api(source_address, payload):
