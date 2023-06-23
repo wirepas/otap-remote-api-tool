@@ -19,7 +19,7 @@ class Agent:
     PERIODIC_INTERVAL = 10  # 10 seconds
 
     # Request timeout, seconds
-    REQUEST_TIMEOUT = 3 * 60  # Three minutes
+    REQUEST_TIMEOUT = 20 * 60  # Twenty minutes, for heavily congested networks
 
     def __init__(self, param, functions, args, connection, req_fragments, keys):
         def not_impl(*args, **kwargs):
@@ -134,6 +134,11 @@ class Agent:
         else:
             self.print_info(f"new node {node_addr} seen")
 
+        if node_info is not None and recv_packet.destination_endpoint != 255:
+            # Only run state machine for diagnostic packets and Remote API
+            # responses, except for newly discovered nodes
+            return
+
         # Run state machine
         phase, updates = self._state_machine(now, phase, node_info, recv_packet)
 
@@ -243,11 +248,14 @@ class Agent:
             lock = info["st_seq"] not in self.allowed_seqs
 
             # Targeted scratchpad update request
-            scr_update = (
+            if (
                 self.update_seq is not None
                 and info["st_sta"] == 0xFF
                 and info["st_seq"] == self.update_seq
-            )
+            ):
+                scr_update_seq = info["st_seq"]
+            else:
+                scr_update_seq = None
 
             # Only lock, never unlock (or update) nodes that are not in the node list
             if self.node_list is not None and node_addr not in self.node_list:
@@ -256,9 +264,9 @@ class Agent:
                     return node_db.Phase.DONE, updates
 
                 # Never send scratchpad update request to unlisted nodes
-                scr_update = False
+                scr_update_seq = None
 
-            if scr_update:
+            if scr_update_seq is not None:
                 # Always send lock / unlock request if scratchpad update requested
                 pass
             elif lock and (info["lock_status"] == node_db.OtapLockStatus.LOCKED):
@@ -269,12 +277,12 @@ class Agent:
                 return node_db.Phase.DONE, updates
 
             self.print_info(
-                f'got info response from {node_addr}, sending {scr_update and f"seq {self.update_seq} update and " or ""}{lock and "lock" or "unlock"} request'
+                f'got info response from {node_addr}, sending {scr_update_seq is not None and f"seq {scr_update_seq} update and " or ""}{lock and "lock" or "unlock"} request'
             )
 
             # Info response OK, send lock or unlock request
             last_req = self._send_lock_unlock_req(
-                recv_packet, info["lock_status"], lock, scr_update
+                recv_packet, info["lock_status"], lock, scr_update_seq
             )
             updates["last_req"] = last_req
 
@@ -407,7 +415,7 @@ class Agent:
 
         return info
 
-    def _send_lock_unlock_req(self, recv_packet, lock_status, new_lock, scr_update):
+    def _send_lock_unlock_req(self, recv_packet, lock_status, new_lock, scr_update_seq):
         gw_id = recv_packet.header.gw_id
         sink_id = recv_packet.header.sink_id
 
@@ -424,9 +432,9 @@ class Agent:
             # Feature Lock Key not set, must use plain Begin request
             begin_req = "01 00"
 
-        if scr_update:
+        if scr_update_seq is not None:
             # MSAP Scratchpad Update
-            update_req = "1A 01 %02X" % self.update_seq
+            update_req = "1A 01 %02X" % scr_update_seq
         else:
             update_req = ""
 
