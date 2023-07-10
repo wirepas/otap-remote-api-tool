@@ -6,9 +6,24 @@ from enum import Enum
 import sqlite3
 
 
+# What the database is used for
+DATABASE_CREATOR = "com/wirepas/otap-tool"
+
+# Version of supported database schema
+# NOTE: Version 0 didn't have a metadata table
+SUPPORTED_SCHEMA_VERSION = 1
+
+# Metadata table definition
+CREATE_METADATA_TABLE_QUERY = """
+CREATE TABLE metadata(
+    key TEXT PRIMARY KEY,
+    value TEXT
+) WITHOUT ROWID;
+"""
+
 # Node information table definition
-CREATE_QUERY = """
-CREATE TABLE IF NOT EXISTS nodes(
+CREATE_NODES_TABLE_QUERY = """
+CREATE TABLE nodes(
     node_addr INT PRIMARY KEY,
     last_seen INT,
     phase INT,
@@ -22,8 +37,27 @@ CREATE TABLE IF NOT EXISTS nodes(
     st_seq INT,
     st_type INT,
     st_status INT,
-    st_blob BLOB
-)
+    fw_len INT,
+    fw_crc INT,
+    fw_seq INT,
+    fw_id INT,
+    fw_ver TEXT,
+    app_len INT,
+    app_crc INT,
+    app_seq INT,
+    app_id INT,
+    app_ver TEXT
+);
+"""
+
+# Read metadata value
+METADATA_READ_QUERY = """
+SELECT * FROM metadata WHERE key = :key
+"""
+
+# Set metadata value
+METADATA_WRITE_QUERY = """
+INSERT INTO metadata VALUES (:key, :value)
 """
 
 # Insert a new node, but keep or update old data if node already exists
@@ -42,7 +76,16 @@ INSERT INTO nodes (
     st_seq,
     st_type,
     st_status,
-    st_blob
+    fw_len,
+    fw_crc,
+    fw_seq,
+    fw_id,
+    fw_ver,
+    app_len,
+    app_crc,
+    app_seq,
+    app_id,
+    app_ver
 ) VALUES (
     :node_addr,
     :last_seen,
@@ -57,7 +100,16 @@ INSERT INTO nodes (
     :st_seq,
     :st_type,
     :st_status,
-    :st_blob
+    :fw_len,
+    :fw_crc,
+    :fw_seq,
+    :fw_id,
+    :fw_ver,
+    :app_len,
+    :app_crc,
+    :app_seq,
+    :app_id,
+    :app_ver
 )
 ON CONFLICT(node_addr) DO UPDATE SET
     node_addr = coalesce(:node_addr, node_addr),
@@ -73,7 +125,16 @@ ON CONFLICT(node_addr) DO UPDATE SET
     st_seq = coalesce(:st_seq, st_seq),
     st_type = coalesce(:st_type, st_type),
     st_status = coalesce(:st_status, st_status),
-    st_blob = coalesce(:st_blob, st_blob)
+    fw_len = coalesce(:fw_len, fw_len),
+    fw_crc = coalesce(:fw_crc, fw_crc),
+    fw_seq = coalesce(:fw_seq, fw_seq),
+    fw_id = coalesce(:fw_id, fw_id),
+    fw_ver = coalesce(:fw_ver, fw_ver),
+    app_len = coalesce(:app_len, app_len),
+    app_crc = coalesce(:app_crc, app_crc),
+    app_seq = coalesce(:app_seq, app_seq),
+    app_id = coalesce(:app_id, app_id),
+    app_ver = coalesce(:app_ver, app_ver)
 """
 
 # Delete node from node information table
@@ -155,10 +216,59 @@ class NodeDb:
         self.conn = sqlite3.connect(filename)
         self.conn.row_factory = sqlite3.Row
 
-        # Create a table of nodes if it doesn't exist already
-        cursor = self.conn.execute(CREATE_QUERY)
-
         self.transaction_cursor = None  # No transaction open, yet
+
+        # Create tables, if the database is empty
+        self._create_tables()
+
+        # Check that the database is something this module can use
+        self._check_database_format()
+
+    def _create_tables(self):
+        # Get a list of tables in the database
+        cursor = self.conn.execute("SELECT * FROM sqlite_master WHERE type='table'")
+        tables = [r["name"] for r in cursor]
+        cursor.close()
+
+        if len(tables) > 0:
+            # Database not empty, do not create tables
+            return
+
+        # Create "metadata" and "nodes" tables
+        self.conn.execute(CREATE_METADATA_TABLE_QUERY).close()
+        self.conn.execute(CREATE_NODES_TABLE_QUERY).close()
+
+        # Populate "metadata" table
+        transaction_cursor = self.conn.execute("BEGIN TRANSACTION")
+        row = {"key": "creator", "value": DATABASE_CREATOR}
+        transaction_cursor.execute(METADATA_WRITE_QUERY, row)
+        row = {"key": "schema_version", "value": SUPPORTED_SCHEMA_VERSION}
+        transaction_cursor.execute(METADATA_WRITE_QUERY, row)
+        transaction_cursor.execute("COMMIT TRANSACTION")
+
+    def _check_database_format(self):
+        try:
+            # Get database creator
+            cursor = self.conn.execute(METADATA_READ_QUERY, {"key": "creator"})
+            db_creator = cursor.fetchone()["value"]
+            cursor.close()
+
+            if db_creator != DATABASE_CREATOR:
+                # Not the expected creator
+                raise ValueError
+
+            # Get the database schema version
+            cursor = self.conn.execute(METADATA_READ_QUERY, {"key": "schema_version"})
+            schema_version = int(cursor.fetchone()["value"])
+            cursor.close()
+        except (ValueError, TypeError, sqlite3.OperationalError):
+            raise ValueError("unsupported database schema") from None
+
+        if schema_version != SUPPORTED_SCHEMA_VERSION:
+            raise ValueError(
+                f"unsupported database schema version {schema_version}"
+                f", only version {SUPPORTED_SCHEMA_VERSION} supported"
+            )
 
     def get_number_of_nodes(self):
         cursor = self.conn.execute(COUNT_QUERY)
@@ -226,7 +336,16 @@ class NodeDb:
         st_seq=None,
         st_type=None,
         st_status=None,
-        st_blob=None,
+        fw_len=None,
+        fw_crc=None,
+        fw_seq=None,
+        fw_id=None,
+        fw_ver=None,
+        app_len=None,
+        app_crc=None,
+        app_seq=None,
+        app_id=None,
+        app_ver=None,
     ):
         if not self.transaction_cursor:
             raise ValueError("no transaction open")
@@ -252,7 +371,16 @@ class NodeDb:
             "st_seq": st_seq,
             "st_type": st_type,
             "st_status": st_status,
-            "st_blob": st_blob,
+            "fw_len": fw_len,
+            "fw_crc": fw_crc,
+            "fw_seq": fw_seq,
+            "fw_id": fw_id,
+            "fw_ver": fw_ver,
+            "app_len": app_len,
+            "app_crc": app_crc,
+            "app_seq": app_seq,
+            "app_id": app_id,
+            "app_ver": app_ver,
         }
 
         # Create a new row or update existing row with any given non-NULL values

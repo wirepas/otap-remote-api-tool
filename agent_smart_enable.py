@@ -192,7 +192,16 @@ class Agent:
             st_seq=updates.get("st_seq", None),
             st_type=updates.get("st_type", None),
             st_status=updates.get("st_sta", None),
-            st_blob=updates.get("st_blob", None),
+            fw_len=updates.get("fw_len", None),
+            fw_crc=updates.get("fw_crc", None),
+            fw_seq=updates.get("fw_seq", None),
+            fw_id=updates.get("fw_id", None),
+            fw_ver=updates.get("fw_ver", None),
+            app_len=updates.get("app_len", None),
+            app_crc=updates.get("app_crc", None),
+            app_seq=updates.get("app_seq", None),
+            app_id=updates.get("app_id", None),
+            app_ver=updates.get("app_ver", None),
         )
         self.db.commit()
 
@@ -379,6 +388,12 @@ class Agent:
             # Check stored scratchpad sequence number and other info
             info.update(resp[1])
 
+            # Convert version tuples to strings
+            ver = info["fw_ver"]
+            info["fw_ver"] = f"{ver[0]}.{ver[1]}.{ver[2]}.{ver[3]}"
+            ver = info["app_ver"]
+            info["app_ver"] = f"{ver[0]}.{ver[1]}.{ver[2]}.{ver[3]}"
+
             if resp[2]["type"] != RemoteApiResponseType.READ_CSAP_ATTRIBUTE:
                 raise ValueError
 
@@ -503,22 +518,6 @@ class Agent:
 
 def _timestamp_as_hex(ts):
     return " ".join(["%02X" % b for b in struct.pack("<L", ts)])
-
-
-def _version_as_uint32_le(major, minor, maint, devel):
-    """Convert a major.minor.maintenance.development version number to a little-endian 32-bit integer"""
-
-    if (
-        (major < 0 or major > 255)
-        or (minor < 0 or minor > 255)
-        or (maint < 0 or maint > 255)
-        or (devel < 0 or devel > 255)
-    ):
-        raise ValueError("each version number component must be 0..255")
-
-    # For the most efficient use of an SQLite3 database,
-    # convert version number to a little-endian 32-bit integer
-    return (major << 24) | (minor << 16) | (maint << 8) | devel
 
 
 def _read_allowed_seqs(filename):

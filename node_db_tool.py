@@ -9,7 +9,10 @@
 #   - Python v3.7 or newer
 
 import sys
+import os
 import argparse
+import tempfile
+import sqlite3
 
 import node_db
 
@@ -83,33 +86,143 @@ def parse_arguments():
         help="statistics about otap sequence numbers",
     )
 
+    parser.add_argument(
+        "-u",
+        "--upgrade_db",
+        action="store_true",
+        help=f"upgrade database schema to the latest version (version {node_db.SUPPORTED_SCHEMA_VERSION})",
+    )
+
     parser.add_argument("-v", "--verbose", action="store_true", help="verbose output")
 
     args = parser.parse_args()
 
-    if int(args.add) + int(args.delete) + int(args.to_text) + int(args.seq_info) != 1:
-        parser.error("must specify one of --add, --delete, --to_text or --seq_info")
+    if (
+        int(args.add)
+        + int(args.delete)
+        + int(args.to_text)
+        + int(args.seq_info)
+        + int(args.upgrade_db)
+        != 1
+    ):
+        parser.error(
+            "must specify one of --add, --delete, --to_text, --seq_info or --upgrade_db"
+        )
 
-    if args.seq_info and args.text_file:
-        parser.error("cannot have --text_file with --seq_info")
+    if args.text_file and (args.seq_info or args.upgrade_db):
+        parser.error("cannot have --text_file with --seq_info or --upgrade_db")
 
     # DEBUG: Show parsed command line arguments
     if False:
         print_msg(repr(args))
 
 
-def convert():
-    """Convert between a node database and a text file"""
+def upgrade_schema_version():
+    tempfilename = None
+
+    try:
+        # Create a temporary file in the same directory as the old SQLite3 database
+        _, tempfilename = tempfile.mkstemp(
+            dir=os.path.dirname(args.db_file), prefix="node_db_tool.", suffix=".sqlite3"
+        )
+
+        # Create an new, empty SQLite3 database with a temporary name
+        try:
+            db = node_db.NodeDb(tempfilename)
+        except ValueError as exc:
+            raise ValueError(f"{tempfilename}: {str(exc)}") from None
+
+        # Open old SQLite3 database
+        try:
+            conn = sqlite3.connect(args.db_file)
+            conn.row_factory = sqlite3.Row
+        except (ValueError, sqlite3.Error) as exc:
+            raise ValueError(f"{args.db_file}: {str(exc)}") from None
+
+        # Get a list of tables in the old database
+        cursor = conn.execute("SELECT * FROM sqlite_master WHERE type='table'")
+        tables = [r["name"] for r in cursor]
+        cursor.close()
+
+        if len(tables) != 1:
+            # Database has more than one table or no tables at all,
+            # so don't know what to do
+            raise ValueError(f"{args.db_file}: unsupported database schema")
+
+        # Convert node information to the new format
+        try:
+            cursor = conn.execute("SELECT * FROM nodes")
+            db.open_transaction()
+            for row in cursor:
+                node_info = dict(row)
+                db.add_or_update_node(
+                    node_addr=node_info["node_addr"],
+                    last_seen=node_info["last_seen"],
+                    phase=node_db.Phase(node_info["phase"]),
+                    node_role=node_info["node_role"],
+                    lock_status=node_db.OtapLockStatus(node_info["lock_status"]),
+                    last_req=node_info["last_req"],
+                    last_resp=node_info["last_resp"],
+                    last_info=node_info["last_info"],
+                    st_len=node_info["st_len"],
+                    st_crc=node_info["st_crc"],
+                    st_seq=node_info["st_seq"],
+                    st_type=node_info["st_type"],
+                    st_status=node_info["st_status"],
+                )
+            db.commit()
+        except (ValueError, sqlite3.Error) as exc:
+            raise ValueError(f"{args.db_file}: {str(exc)}") from None
+
+        # Replace old SQLite3 database with new
+        try:
+            os.replace(tempfilename, args.db_file)
+        except OSError as exc:
+            raise ValueError(f"{args.db_file}: {str(exc)}") from None
+
+        print_verbose(f"schema upgraded to version {node_db.SUPPORTED_SCHEMA_VERSION}")
+    finally:
+        if tempfile is not None:
+            # Remove temporary file
+            try:
+                os.remove(tempfilename)
+            except OSError:
+                pass
+
+
+def perform_command():
+    """Perform database command"""
 
     close_text_file = not not args.text_file
     text_file = None
 
     try:
         # Open node database
+        db = None
         print_verbose(f"opening node database {args.db_file}")
-        db = node_db.NodeDb(args.db_file)
 
-        if args.to_text:
+        try:
+            db = node_db.NodeDb(args.db_file)
+
+            if args.upgrade_db:
+                # Opened successfully, so already the correct schema version
+                print_msg(
+                    f"{args.db_file}: already schema version "
+                    f"{node_db.SUPPORTED_SCHEMA_VERSION}"
+                )
+                db = None
+        except ValueError as exc:
+            if args.upgrade_db:
+                # Upgrade the database schema version
+                db = None
+                upgrade_schema_version()
+            else:
+                raise ValueError(f"{args.db_file}: {str(exc)}") from None
+
+        if db is None:
+            # Command already handled above
+            pass
+        elif args.to_text:
             # Convert node database to text
             if args.text_file:
                 text_file = open(args.text_file, "w")
@@ -168,6 +281,8 @@ def convert():
 
             # Print summary
             print_verbose(f"{db.get_number_of_nodes()} nodes in database")
+    except ValueError as exc:
+        print_msg(str(exc))
     finally:
         if close_text_file and text_file:
             text_file.close()
@@ -178,7 +293,7 @@ def main():
 
     parse_arguments()
 
-    convert()
+    perform_command()
 
 
 # Run main
