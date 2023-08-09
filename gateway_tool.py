@@ -63,7 +63,8 @@ class Command(Enum):
     SCRATCHPAD_INFO = 1
     SET_APP_CONFIG = 2
     UPLOAD_SCRATCHPAD = 3
-    AUTO_UPLOAD = 4
+    PROCESS_SCRATCHPAD = 4
+    AUTO_UPLOAD = 5
 
 
 class ParallelWniRequests:
@@ -616,7 +617,34 @@ def command_scratchpad_info():
             try:
                 # Extract scratchpad info
                 scr_status = other_data[0]
-                msg = f'st_len: {scr_status["stored_scratchpad"]["len"]}, st_crc: 0x{scr_status["stored_scratchpad"]["crc"]:04x}, st_seq: {scr_status["stored_scratchpad"]["seq"]}'
+
+                # Stored scratchpad info
+                st_status = scr_status["stored_scratchpad"]
+                st_len, st_crc, st_seq = (
+                    st_status["len"],
+                    st_status["crc"],
+                    st_status["seq"],
+                )
+                st_sta, st_type = scr_status["stored_status"], scr_status["stored_type"]
+                st_sta = str(st_sta).split(".")[-1]  # Make Enum name shorter
+                st_type = str(st_type).split(".")[-1]
+
+                st_str = (
+                    f"st_len: {st_len}, st_crc: 0x{st_crc:04X}, st_seq: {st_seq}"
+                    f", st_type: {st_type}, st_sta: {st_sta}"
+                )
+
+                # Processed firmware scratchpad info
+                fw_status = scr_status["processed_scratchpad"]
+                fw_len, fw_crc, fw_seq = (
+                    fw_status["len"],
+                    fw_status["crc"],
+                    fw_status["seq"],
+                )
+
+                fw_str = f"fw_len: {fw_len}, fw_crc: 0x{fw_crc:04X}, fw_seq: {fw_seq}"
+
+                msg = f"{st_str}, {fw_str}"
             except (IndexError, KeyError):
                 msg = f"missing info"
 
@@ -740,6 +768,40 @@ def command_upload_scratchpad():
             )
 
     preq = ParallelUploadRequests(wni, args.batch_size, args.timeout, op_text="upload")
+    preq.add_all_sinks(connection.gateways)
+    preq.run()
+
+
+def command_process_scratchpad():
+    global args
+    global connection
+    global wni
+
+    class ParallelProcessRequests(ParallelWniRequests):
+        def perform_request(self, gw_id, sink_id):
+            global args
+
+            print_verbose(f"gw: {gw_id}, sink: {sink_id}, processing scratchpad")
+
+            # Start asynchronous scratchpad processing
+            self.wni.process_scratchpad(
+                gw_id,
+                sink_id,
+                self.request_done_cb,
+                (gw_id, sink_id),
+                # TODO: Not implemented yet in release version of
+                #       wirepas_mqtt_library
+                #        timeout=args.timeout * 9 // 10,  # A bit shorter than request timeout
+            )
+
+        def progress(self, num_sinks):
+            global args
+
+            print_info(f"processing scratchpad on {num_sinks} sinks")
+
+    preq = ParallelProcessRequests(
+        wni, args.batch_size, args.timeout, op_text="processing"
+    )
     preq.add_all_sinks(connection.gateways)
     preq.run()
 
